@@ -39,11 +39,18 @@ common common-options
                        MultiParamTypeClasses
                        ScopedTypeVariables
                        DerivingStrategies
+                       GeneralizedNewtypeDeriving
 
 library
   import:              common-options
   hs-source-dirs:      src
   exposed-modules:     SelfInducedGlasses
+                       SelfInducedGlasses.Core
+                       SelfInducedGlasses.Metropolis
+  build-depends:       vector
+                     , random >= 1.2
+                     , primitive
+                     , mtl
 
 executable self-induced-glasses
   import:              common-options
