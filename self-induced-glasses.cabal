@@ -39,7 +39,6 @@ common common-options
                        MultiParamTypeClasses
                        ScopedTypeVariables
                        DerivingStrategies
-                       GeneralizedNewtypeDeriving
 
 library
   import:              common-options
@@ -51,12 +50,16 @@ library
                      , random >= 1.2
                      , primitive
                      , mtl
+                     , MemoTrie
 
 executable self-induced-glasses
   import:              common-options
   hs-source-dirs:      app
   main-is:             Main.hs
   build-depends:       self-induced-glasses
+                     , random
+                     , vector
+                     , mtl
   ghc-options:         -threaded
                        -rtsopts
                        -with-rtsopts=-N
@@ -67,6 +70,8 @@ test-suite self-induced-glasses-test
   hs-source-dirs:      test
   main-is:             Spec.hs
   build-depends:       self-induced-glasses
+                     , random
+                     , vector
   ghc-options:         -threaded
                        -rtsopts
                        -with-rtsopts=-N
