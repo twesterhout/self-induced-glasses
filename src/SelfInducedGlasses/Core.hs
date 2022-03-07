@@ -1,32 +1,82 @@
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module SelfInducedGlasses.Core where
 
+import Control.DeepSeq
 import Control.Monad (forM_)
 import Control.Monad.Primitive
 import Control.Monad.ST
 import Data.Bits
+import qualified Data.HDF5 as H5
 import Data.List (foldl', intercalate)
 import Data.MemoTrie
-import Data.Vector.Generic (Vector, (!))
+import Data.Vector.Generic (Mutable, Vector, (!))
 import qualified Data.Vector.Generic as G
 import Data.Vector.Generic.Mutable (MVector)
 import qualified Data.Vector.Generic.Mutable as GM
 import qualified Data.Vector.Storable as S
 import Data.Word
 import Debug.Trace
+import Foreign.Storable (Storable)
+import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
 import System.IO
 
--- data System = System
 type ℝ = Float
 
+-- | Dense matrix in row-major order
+--
+-- We use dense matrices for two purposes:
+--
+--   * storing the matrix of couplings Jᵢⱼ
+--   * storing bitstrings produced by Monte Carlo (such that each row is a bitstring)
 data DenseMatrix v a = DenseMatrix {-# UNPACK #-} !Int {-# UNPACK #-} !Int {-# UNPACK #-} !(v a)
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic, NFData)
+
+type instance H5.ElementOf (DenseMatrix v a) = a
+
+instance (H5.KnownDatatype a, Storable a) => H5.KnownDataset' (DenseMatrix S.Vector a) where
+  withArrayView' (DenseMatrix r c v) action = action (H5.ArrayView' fp [r, c] [c, 1])
+    where
+      (fp, _) = S.unsafeToForeignPtr0 v
+  fromArrayView' (H5.ArrayView' fp [r, c] [c', 1])
+    | c == c' = pure $ DenseMatrix r c (S.unsafeFromForeignPtr0 fp (r * c))
+  fromArrayView' _ = error "invalid shapes or strides"
+
+sliceDenseMatrix :: (HasCallStack, Vector v a) => Int -> Int -> Int -> DenseMatrix v a -> DenseMatrix v a
+sliceDenseMatrix 0 offset size (DenseMatrix r c v) = DenseMatrix size' c (G.slice (offset' * c) (size' * c) v)
+  where
+    offset'
+      | offset >= 0 = min offset r
+      | otherwise = error "invalid offset"
+    size'
+      | size >= 0 = min size (r - offset')
+      | size == -1 = r - offset'
+      | otherwise = error "invalid size"
+sliceDenseMatrix 1 _ _ _ = error "not implemented"
+sliceDenseMatrix _ _ _ _ = error "invalid dimension"
+
+-- | Interpret the matrix as a list of rows
+denseMatrixRows :: Vector v a => DenseMatrix v a -> [v a]
+denseMatrixRows (DenseMatrix r c v) = go 0
+  where
+    go !i
+      | i < r = G.slice (i * c) c v : go (i + 1)
+      | otherwise = []
+
+unsafeFreezeDenseMatrix :: (PrimMonad m, Vector v a) => DenseMatrix (Mutable v (PrimState m)) a -> m (DenseMatrix v a)
+unsafeFreezeDenseMatrix (DenseMatrix r c v) = DenseMatrix r c <$> G.unsafeFreeze v
 
 getRow :: (HasCallStack, Vector v a) => Int -> DenseMatrix v a -> v a
 getRow i (DenseMatrix nRows nCols v)
   | i < nRows = G.slice (i * nCols) nCols v
+  | otherwise = error "index out of bounds"
+
+getMutableRow :: (HasCallStack, MVector v a) => Int -> DenseMatrix (v s) a -> v s a
+getMutableRow i (DenseMatrix nRows nCols v)
+  | i < nRows = GM.slice (i * nCols) nCols v
   | otherwise = error "index out of bounds"
 
 dotProduct :: (Vector v a, Num a) => v a -> v a -> a
@@ -84,8 +134,7 @@ toCartesian (LatticeVectors r₁ r₂) (P a b) = (fromIntegral a) `scale` r₁ +
 indexToPoint :: Lattice -> Int -> Point Int
 indexToPoint (Lattice (width, _) _) i = P x y
   where
-    x = i `mod` width
-    y = i `div` width
+    (y, x) = i `divMod` width
 
 pointToIndex :: Lattice -> Point Int -> Int
 pointToIndex (Lattice (width, _) _) (P x y) = y * width + x
@@ -219,11 +268,10 @@ storeWord n v offset w = go w 0
         go (acc `shiftR` 1) (i + 1)
       | otherwise = pure ()
 
-packConfiguration :: Configuration -> S.Vector Word64
-packConfiguration (Configuration v) = runST $ do
+packConfiguration :: (PrimMonad m, MVector v Word64) => Configuration -> v (PrimState m) Word64 -> m ()
+packConfiguration (Configuration v) buffer = do
   let numberBits = G.length v
       numberWords = (numberBits + 63) `div` 64
-  buffer <- GM.new numberWords
   let go !i
         | i + 64 <= numberBits = do
           GM.write buffer (i `div` 64) (loadWord i 64 v)
@@ -233,7 +281,6 @@ packConfiguration (Configuration v) = runST $ do
           pure ()
         | otherwise = pure ()
   go 0
-  G.unsafeFreeze buffer
 
 unpackConfiguration :: Int -> S.Vector Word64 -> Configuration
 unpackConfiguration numberBits v = runST $ do
@@ -257,22 +304,3 @@ freeze (MutableConfiguration v) = Configuration <$> G.freeze v
 
 unsafeFreeze :: PrimMonad m => MutableConfiguration (PrimState m) -> m Configuration
 unsafeFreeze (MutableConfiguration v) = Configuration <$> G.unsafeFreeze v
-
-computeMagnetizationPerSite :: Configuration -> ℝ
-computeMagnetizationPerSite (Configuration v) = G.sum v / fromIntegral (G.length v)
-
-computeEnergyPerSite :: G.Vector v ℝ => DenseMatrix v ℝ -> Configuration -> ℝ
-computeEnergyPerSite couplings (Configuration v) =
-  totalEnergy couplings (G.convert v) / fromIntegral (G.length v)
-
-saveForGnuplot :: Lattice -> FilePath -> Configuration -> IO ()
-saveForGnuplot (Lattice (width, height) _) filepath (Configuration v) = do
-  let m = DenseMatrix height width v
-  withFile filepath WriteMode $ \h ->
-    forM_ [0 .. height - 1] $ \i ->
-      hPutStrLn h
-        . intercalate "\t"
-        . fmap show
-        . G.toList
-        . getRow (height - 1 - i)
-        $ m

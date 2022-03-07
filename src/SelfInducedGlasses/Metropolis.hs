@@ -15,20 +15,20 @@ import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Generic.Mutable as GM
 import qualified Data.Vector.Storable as S
 import qualified Data.Vector.Storable.Mutable as SM
+import Data.Word
 import Foreign.Storable (Storable)
 import SelfInducedGlasses.Core
 import System.Random.Stateful
 
-data SamplingOptions g = SamplingOptions
+data SamplingOptions = SamplingOptions
   { soCoupling :: {-# UNPACK #-} !(DenseMatrix S.Vector ℝ),
-    -- soBeta :: {-# UNPACK #-} !ℝ,
-    soGenerator :: {-# UNPACK #-} !g,
     soInitialConfiguration :: !(Maybe Configuration)
   }
 
-data MetropolisState g s = MetropolisState
-  { msOptions :: !(SamplingOptions g),
-    msConfiguration :: {-# UNPACK #-} !(MutableConfiguration s)
+data MetropolisState s = MetropolisState
+  { msCoupling :: {-# UNPACK #-} !(DenseMatrix S.Vector ℝ),
+    msConfiguration :: {-# UNPACK #-} !(MutableConfiguration s),
+    msDeltaEnergies :: {-# UNPACK #-} !(S.MVector s ℝ)
   }
 
 data MetropolisStats = MetropolisStats
@@ -36,19 +36,21 @@ data MetropolisStats = MetropolisStats
     msState :: {-# UNPACK #-} !Configuration
   }
 
-newtype MetropolisT g m a = MetropolisT
-  { unMetropolis :: ReaderT (MetropolisState g (PrimState m)) m a
+newtype MetropolisT m a = MetropolisT
+  { unMetropolis :: ReaderT (MetropolisState (PrimState m)) m a
   }
   deriving newtype (Functor, Applicative, Monad, PrimMonad)
 
-instance MonadTrans (MetropolisT g) where
+instance MonadTrans MetropolisT where
   lift f = MetropolisT (lift f)
 
-deriving newtype instance (PrimMonad m, s ~ PrimState m) => MonadReader (MetropolisState g s) (MetropolisT g m)
+deriving newtype instance
+  (PrimMonad m, s ~ PrimState m) =>
+  MonadReader (MetropolisState s) (MetropolisT m)
 
-deriving newtype instance (PrimMonad m, MonadState g m) => MonadState g (MetropolisT (StateGenM g) m)
+-- deriving newtype instance (PrimMonad m, MonadState g m) => MonadState g (MetropolisT m)
 
--- instance (PrimMonad m, s ~ PrimState m, StatefulGen g m) => StatefulGen g (MetropolisT g m) where
+-- instance (PrimMonad m, StatefulGen g m) => StatefulGen g (MetropolisT m) where
 --   uniformWord32R r g = lift $ uniformWord32R r g
 --   uniformWord64R r g = lift $ uniformWord64R r g
 --   uniformWord8 g = lift $ uniformWord8 g
@@ -66,53 +68,75 @@ randomConfigurationM n g = Configuration . G.map fromBool <$> G.replicateM n (un
 randomConfiguration :: forall g. RandomGen g => Int -> g -> (Configuration, g)
 randomConfiguration n g = runStateGen g (randomConfigurationM n)
 
-prepareInitialState :: (PrimMonad m, StatefulGen g m) => SamplingOptions g -> m (MetropolisState g (PrimState m))
-prepareInitialState options = do
+prepareInitialState ::
+  (PrimMonad m, StatefulGen g m) =>
+  SamplingOptions ->
+  g ->
+  m (MetropolisState (PrimState m))
+prepareInitialState options g = do
+  let coupling@(DenseMatrix n _ _) = soCoupling options
   v₀ <- case soInitialConfiguration options of
-    Nothing ->
-      let (DenseMatrix n _ _) = soCoupling options
-       in randomConfigurationM n (soGenerator options)
+    Nothing -> randomConfigurationM n g
     Just v -> pure v
-  MetropolisState options <$> thaw v₀
+  MetropolisState coupling <$> thaw v₀ <*> GM.new n
 
-runMetropolisT :: (PrimMonad m, StatefulGen g m) => SamplingOptions g -> MetropolisT g m a -> m a
-runMetropolisT options m = do
-  s <- prepareInitialState options
-  runReaderT (unMetropolis m) s
+runMetropolisT ::
+  (PrimMonad m, StatefulGen g m) =>
+  (g -> MetropolisT m a) ->
+  SamplingOptions ->
+  g ->
+  m a
+runMetropolisT m options g = do
+  s <- prepareInitialState options g
+  runReaderT (unMetropolis (m g)) s
 
 flipSpin :: PrimMonad m => Int -> MutableConfiguration (PrimState m) -> m ()
 flipSpin i (MutableConfiguration v) = GM.modify v (* (-1)) i
 
-step :: forall m g. (PrimMonad m, StatefulGen g (MetropolisT g m)) => ℝ -> MetropolisT g m Bool
-step β = do
+step :: forall m g. (PrimMonad m, StatefulGen g m) => ℝ -> g -> MetropolisT m Bool
+step β g = do
   !x <- asks msConfiguration
   let !numberSpins = case x of (MutableConfiguration v) -> GM.length v
-  !i <- uniformRM (0, numberSpins - 1) =<< asks (soGenerator . msOptions)
-  !δe <-
-    energyDifferenceUponFlip
-      <$> asks (soCoupling . msOptions)
-      <*> pure i
-      <*> unsafeFreeze x
-  if (δe > 0)
+  !i <- lift $ uniformRM (0, numberSpins - 1) g
+  !δe <- energyDifferenceUponFlip <$> asks msCoupling <*> pure i <*> unsafeFreeze x
+  if δe > 0
     then do
-      !u <- uniformRM (0, 1) =<< asks (soGenerator . msOptions)
+      !u <- lift $ uniformRM (0, 1) g
       if u < exp (-β * δe)
         then flipSpin i x >> pure True
         else pure False
     else flipSpin i x >> pure True
 
-sweep :: forall m g. (PrimMonad m, StatefulGen g (MetropolisT g m)) => ℝ -> Int -> MetropolisT g m MetropolisStats
-sweep β n = go 0 n
+sweep :: forall m g. (PrimMonad m, StatefulGen g m) => ℝ -> Int -> g -> MetropolisT m MetropolisStats
+sweep β n g = go 0 n
   where
-    go :: Int -> Int -> MetropolisT g m MetropolisStats
+    go :: Int -> Int -> MetropolisT m MetropolisStats
     go !acc !i
       | i > 0 = do
-        accepted <- step β
+        accepted <- step β g
         if accepted
           then go (acc + 1) (i - 1)
           else go acc (i - 1)
       | otherwise =
         MetropolisStats (fromIntegral acc / fromIntegral n) <$> (freeze =<< asks msConfiguration)
 
-manySweeps :: (PrimMonad m, StatefulGen g (MetropolisT g m)) => ℝ -> Int -> Int -> MetropolisT g m [MetropolisStats]
-manySweeps β numberSweeps sweepSize = replicateM numberSweeps (sweep β sweepSize)
+manySweeps ::
+  (PrimMonad m, StatefulGen g m) =>
+  ℝ ->
+  Int ->
+  Int ->
+  g ->
+  MetropolisT m (DenseMatrix S.Vector Word64, ℝ)
+manySweeps β numberSweeps sweepSize g = do
+  (DenseMatrix n _ _) <- asks msCoupling
+  let numberWords = (n + 63) `div` 64
+  buffer <- DenseMatrix numberSweeps numberWords <$> GM.new (numberSweeps * numberWords)
+  let go !i !acc
+        | i < numberSweeps = do
+          (MetropolisStats acc' σ) <- sweep β sweepSize g
+          packConfiguration σ (getMutableRow i buffer)
+          go (i + 1) (acc + acc')
+        | otherwise = pure (acc / fromIntegral numberSweeps)
+  acceptance <- go 0 0
+  states <- unsafeFreezeDenseMatrix buffer
+  pure (states, acceptance)
