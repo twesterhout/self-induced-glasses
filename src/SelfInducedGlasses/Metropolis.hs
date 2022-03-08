@@ -31,10 +31,10 @@ data MetropolisState s = MetropolisState
     msDeltaEnergies :: {-# UNPACK #-} !(S.MVector s ℝ)
   }
 
-data MetropolisStats = MetropolisStats
-  { msAcceptance :: {-# UNPACK #-} !ℝ,
-    msState :: {-# UNPACK #-} !Configuration
-  }
+-- data MetropolisStats = MetropolisStats
+--   { msAcceptance :: {-# UNPACK #-} !ℝ,
+--     msState :: {-# UNPACK #-} !Configuration
+--   }
 
 newtype MetropolisT m a = MetropolisT
   { unMetropolis :: ReaderT (MetropolisState (PrimState m)) m a
@@ -91,34 +91,47 @@ runMetropolisT m options g = do
   runReaderT (unMetropolis (m g)) s
 
 flipSpin :: PrimMonad m => Int -> MutableConfiguration (PrimState m) -> m ()
-flipSpin i (MutableConfiguration v) = GM.modify v (* (-1)) i
+flipSpin i (MutableConfiguration v) = GM.unsafeModify v (* (-1)) i
+{-# INLINE flipSpin #-}
+
+numberSpins :: MutableConfiguration s -> Int
+numberSpins (MutableConfiguration v) = GM.length v
+{-# INLINE numberSpins #-}
 
 step :: forall m g. (PrimMonad m, StatefulGen g m) => ℝ -> g -> MetropolisT m Bool
-step β g = do
-  !x <- asks msConfiguration
-  let !numberSpins = case x of (MutableConfiguration v) -> GM.length v
-  !i <- lift $ uniformRM (0, numberSpins - 1) g
-  !δe <- energyDifferenceUponFlip <$> asks msCoupling <*> pure i <*> unsafeFreeze x
+step !β !g = do
+  x <- asks msConfiguration
+  i <- lift $! uniformRM (0, numberSpins x - 1) g
+  coupling <- asks msCoupling
+  σ <- unsafeFreeze x
+  let δe = energyDifferenceUponFlip coupling i σ
   if δe > 0
     then do
-      !u <- lift $ uniformRM (0, 1) g
+      u <- lift $! uniformRM (0, 1) g
       if u < exp (-β * δe)
         then flipSpin i x >> pure True
         else pure False
     else flipSpin i x >> pure True
+{-# INLINE step #-}
 
-sweep :: forall m g. (PrimMonad m, StatefulGen g m) => ℝ -> Int -> g -> MetropolisT m MetropolisStats
-sweep β n g = go 0 n
+sweep :: forall m g v. (PrimMonad m, StatefulGen g m, GM.MVector v Word64) => ℝ -> Int -> Maybe (v (PrimState m) Word64) -> g -> MetropolisT m ℝ
+sweep !β !n !buffer !g = go 0 n
   where
-    go :: Int -> Int -> MetropolisT m MetropolisStats
+    go :: Int -> Int -> MetropolisT m ℝ
     go !acc !i
       | i > 0 = do
         accepted <- step β g
         if accepted
           then go (acc + 1) (i - 1)
           else go acc (i - 1)
-      | otherwise =
-        MetropolisStats (fromIntegral acc / fromIntegral n) <$> (freeze =<< asks msConfiguration)
+      | otherwise = do
+        case buffer of
+          Just dest -> do
+            σ <- unsafeFreeze =<< asks msConfiguration
+            packConfiguration σ dest
+          Nothing -> pure ()
+        pure $ fromIntegral acc / fromIntegral n
+{-# SCC sweep #-}
 
 manySweeps ::
   (PrimMonad m, StatefulGen g m) =>
@@ -127,16 +140,26 @@ manySweeps ::
   Int ->
   g ->
   MetropolisT m (DenseMatrix S.Vector Word64, ℝ)
-manySweeps β numberSweeps sweepSize g = do
+manySweeps !β !numberSweeps !sweepSize !g = do
   (DenseMatrix n _ _) <- asks msCoupling
   let numberWords = (n + 63) `div` 64
   buffer <- DenseMatrix numberSweeps numberWords <$> GM.new (numberSweeps * numberWords)
   let go !i !acc
         | i < numberSweeps = do
-          (MetropolisStats acc' σ) <- sweep β sweepSize g
-          packConfiguration σ (getMutableRow i buffer)
+          acc' <- sweep β sweepSize (Just (getMutableRow i buffer)) g
           go (i + 1) (acc + acc')
         | otherwise = pure (acc / fromIntegral numberSweeps)
   acceptance <- go 0 0
   states <- unsafeFreezeDenseMatrix buffer
   pure (states, acceptance)
+{-# SCC manySweeps #-}
+
+thermalize ::
+  (PrimMonad m, StatefulGen g m) =>
+  ℝ ->
+  Int ->
+  Int ->
+  g ->
+  MetropolisT m ℝ
+thermalize β numberSweeps sweepSize g = snd <$> manySweeps β 1 (numberSweeps * sweepSize) g
+{-# SCC thermalize #-}

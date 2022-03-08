@@ -1,3 +1,4 @@
+{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -9,6 +10,7 @@ import Control.Monad (forM_)
 import Control.Monad.Primitive
 import Control.Monad.ST
 import Data.Bits
+import Data.Coerce (coerce)
 import qualified Data.HDF5 as H5
 import Data.List (foldl', intercalate)
 import Data.MemoTrie
@@ -19,10 +21,13 @@ import qualified Data.Vector.Generic.Mutable as GM
 import qualified Data.Vector.Storable as S
 import Data.Word
 import Debug.Trace
+import Foreign.C.Types (CFloat (..), CPtrdiff (..))
+import Foreign.Ptr (Ptr, castPtr)
 import Foreign.Storable (Storable)
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
 import System.IO
+import qualified System.IO.Unsafe
 
 type ℝ = Float
 
@@ -82,13 +87,31 @@ getMutableRow i (DenseMatrix nRows nCols v)
 dotProduct :: (Vector v a, Num a) => v a -> v a -> a
 dotProduct a b = G.sum $ G.zipWith (*) a b
 
-totalEnergy :: (HasCallStack, Vector v a, Num a) => DenseMatrix v a -> v a -> a
-totalEnergy m@(DenseMatrix nRows nCols v) x = -dotProduct x matvec
-  where
-    matvec = G.generate nRows (\i -> dotProduct (getRow i m) x)
+foreign import capi unsafe "helpers.h total_energy"
+  total_energy :: CPtrdiff -> Ptr CFloat -> Ptr CFloat -> IO CFloat
 
-energyDifferenceUponFlip :: (HasCallStack, Vector v ℝ) => DenseMatrix v ℝ -> Int -> Configuration -> ℝ
-energyDifferenceUponFlip m i (Configuration x) = 2 * dotProduct (getRow i m) (G.convert x) * (x ! i)
+totalEnergy :: DenseMatrix S.Vector ℝ -> Configuration -> ℝ
+totalEnergy m@(DenseMatrix n _ v) (Configuration x) =
+  (coerce :: CFloat -> Float) . System.IO.Unsafe.unsafePerformIO $
+    S.unsafeWith v $ \(couplingsPtr :: Ptr Float) ->
+      S.unsafeWith x $ \(xPtr :: Ptr Float) ->
+        total_energy (fromIntegral n) (castPtr couplingsPtr) (castPtr xPtr)
+{-# SCC totalEnergy #-}
+
+foreign import capi unsafe "helpers.h energy_change_upon_flip"
+  energy_change_upon_flip :: CPtrdiff -> Ptr CFloat -> Ptr CFloat -> CPtrdiff -> IO CFloat
+
+energyDifferenceUponFlip :: DenseMatrix S.Vector ℝ -> Int -> Configuration -> ℝ
+energyDifferenceUponFlip (DenseMatrix !n _ !v) !i (Configuration !x) =
+  (coerce :: CFloat -> Float) . System.IO.Unsafe.unsafePerformIO $
+    S.unsafeWith v $ \(couplingsPtr :: Ptr Float) ->
+      S.unsafeWith x $ \(xPtr :: Ptr Float) ->
+        energy_change_upon_flip (fromIntegral n) (castPtr couplingsPtr) (castPtr xPtr) (fromIntegral i)
+{-# INLINE energyDifferenceUponFlip #-}
+{-# SCC energyDifferenceUponFlip #-}
+
+-- energyDifferenceUponFlip :: (HasCallStack, Vector v ℝ) => DenseMatrix v ℝ -> Int -> Configuration -> ℝ
+-- energyDifferenceUponFlip m i (Configuration x) = 2 * dotProduct (getRow i m) (G.convert x) * (x ! i)
 
 someFunc :: IO ()
 someFunc = putStrLn ("someFunc" :: String)
@@ -234,6 +257,7 @@ buildInteractionMatrix lattice@(Lattice (width, height) _) f =
         (P x y) = projectUsingTranslations lattice (pⱼ - pᵢ)
     compute :: (Int, Int) -> a
     compute = memo $ \(x, y) -> f (P x y)
+{-# SCC buildInteractionMatrix #-}
 
 newtype Configuration = Configuration (S.Vector ℝ)
   deriving stock (Show, Eq)
@@ -249,7 +273,7 @@ loadWord offset n v = go 0 0
         let x = G.unsafeIndex v (offset + i)
             acc' =
               if x == 1
-                then acc .|. ((1 :: Word64) `shiftL` i)
+                then acc .|. ((1 :: Word64) `unsafeShiftL` i)
                 else acc
          in go acc' (i + 1)
       | otherwise = acc
@@ -274,13 +298,14 @@ packConfiguration (Configuration v) buffer = do
       numberWords = (numberBits + 63) `div` 64
   let go !i
         | i + 64 <= numberBits = do
-          GM.write buffer (i `div` 64) (loadWord i 64 v)
+          GM.unsafeWrite buffer (i `div` 64) (loadWord i 64 v)
           go (i + 64)
         | i < numberBits = do
-          GM.write buffer (i `div` 64) (loadWord i (numberBits - i) v)
+          GM.unsafeWrite buffer (i `div` 64) (loadWord i (numberBits - i) v)
           pure ()
         | otherwise = pure ()
   go 0
+{-# SCC packConfiguration #-}
 
 unpackConfiguration :: Int -> S.Vector Word64 -> Configuration
 unpackConfiguration numberBits v = runST $ do

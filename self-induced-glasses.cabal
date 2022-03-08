@@ -46,11 +46,25 @@ library
   exposed-modules:     SelfInducedGlasses
                        SelfInducedGlasses.Core
                        SelfInducedGlasses.Metropolis
+                       SelfInducedGlasses.Analysis
+                       SelfInducedGlasses.Random
+  c-sources:           cbits/helpers.c
+                       cbits/xoshiro256plusplus.c
+  cc-options:          -O3 -DNDEBUG
+  include-dirs:        cbits
+  extra-lib-dirs:      /usr/lib/x86_64-linux-gnu/openblas-openmp
+  extra-libraries:     openblas
+                     , fftw3f
   build-depends:       vector
+                     , text
+                     , deepseq
                      , random >= 1.2
                      , primitive
+                     , ghc-prim
                      , mtl
                      , MemoTrie
+                     , hdf5-hs
+                     , co-log
 
 executable self-induced-glasses
   import:              common-options
@@ -58,8 +72,11 @@ executable self-induced-glasses
   main-is:             Main.hs
   build-depends:       self-induced-glasses
                      , random
+                     , primitive
                      , vector
                      , mtl
+                     , text
+                     , hdf5-hs
   ghc-options:         -threaded
                        -rtsopts
                        -with-rtsopts=-N
