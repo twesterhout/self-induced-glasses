@@ -10,10 +10,12 @@ import Control.Monad (forM_)
 import Control.Monad.Primitive
 import Control.Monad.ST
 import Data.Bits
+import qualified Data.ByteString.Builder as Builder
 import Data.Coerce (coerce)
 import qualified Data.HDF5 as H5
 import Data.List (foldl', intercalate)
 import Data.MemoTrie
+import Data.Text (Text, pack, unpack)
 import Data.Vector.Generic (Mutable, Vector, (!))
 import qualified Data.Vector.Generic as G
 import Data.Vector.Generic.Mutable (MVector)
@@ -116,6 +118,7 @@ energyDifferenceUponFlip (DenseMatrix !n _ !v) !i (Configuration !x) =
 someFunc :: IO ()
 someFunc = putStrLn ("someFunc" :: String)
 
+-- | Point on a 2-dimensional lattice
 data Point a = P {-# UNPACK #-} !a {-# UNPACK #-} !a
   deriving stock (Show, Eq)
 
@@ -142,11 +145,11 @@ data Model = Model
     modelLambda :: !ℝ
   }
 
-testLattice1 :: Lattice
-testLattice1 = Lattice (10, 10) squareLatticeVectors
+-- testLattice1 :: Lattice
+-- testLattice1 = Lattice (10, 10) squareLatticeVectors
 
-testModel1 :: Model
-testModel1 = Model testLattice1 7
+-- testModel1 :: Model
+-- testModel1 = Model testLattice1 7
 
 norm :: Floating a => Point a -> a
 norm (P x y) = sqrt (x * x + y * y)
@@ -166,7 +169,7 @@ squareLatticeVectors :: LatticeVectors
 squareLatticeVectors = LatticeVectors (P 1 0) (P 0 1)
 
 rawInteraction :: LatticeVectors -> ℝ -> Point Int -> Point Int -> ℝ
-rawInteraction latticeVectors λ pᵢ pⱼ = 1 / (r ^ 2) * sin (2 * pi / λ * r)
+rawInteraction latticeVectors λ pᵢ pⱼ = 1 / (r * r) * sin (2 * pi / λ * r)
   where
     !r = norm $ toCartesian latticeVectors (pᵢ - pⱼ)
 {-# INLINE rawInteraction #-}
@@ -202,6 +205,19 @@ effectiveInteractionDebug model@(Model (Lattice _ latticeVectors) λ) pⱼ = go 
       let !δj = effectiveInteractionLoop model pⱼ r
           !acc' = acc + δj
        in (r, δj, acc') : go (r + 1) acc'
+
+dumpCouplingEvolutionToFile :: Text -> [(Int, ℝ, ℝ)] -> IO ()
+dumpCouplingEvolutionToFile filename v =
+  withFile (unpack filename) WriteMode $ \h ->
+    Builder.hPutBuilder h (renderTable v)
+  where
+    renderTable rs = mconcat [renderRow r <> Builder.charUtf8 '\n' | r <- rs]
+    renderRow (r, δj, j) =
+      Builder.intDec r
+        <> Builder.charUtf8 ','
+        <> Builder.floatDec δj
+        <> Builder.charUtf8 ','
+        <> Builder.floatDec j
 
 buildMatrix ::
   Vector v a =>

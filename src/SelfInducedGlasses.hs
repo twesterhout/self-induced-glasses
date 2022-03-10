@@ -9,8 +9,8 @@ module SelfInducedGlasses
     Point (..),
     effectiveInteractionDebug,
     effectiveInteraction,
-    testLattice1,
-    testModel1,
+    -- testLattice1,
+    -- testModel1,
     closestToOrigin,
   )
 where

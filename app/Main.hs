@@ -17,12 +17,24 @@ import SelfInducedGlasses.Metropolis
 import SelfInducedGlasses.Random
 import System.IO
 import System.Random.Stateful
+import Text.Printf (printf)
 
 generateInitialState :: (G.Vector v ℝ, StatefulGen g m) => Int -> g -> m (v ℝ)
 generateInitialState n g = undefined
 
 β :: ℝ
 β = 0.12
+
+couplingsRenormalization :: IO ()
+couplingsRenormalization = do
+  let n = 10
+      lattice = Lattice (n, n) squareLatticeVectors
+  forM_ [2, 5] $ \y ->
+    forM_ [2, 5, 20] $ \λ ->
+      let model = Model lattice λ
+          pⱼ = P 3 y
+          filename = pack $ printf "couplings_renormalization_%f_%d.csv" λ y
+       in dumpCouplingEvolutionToFile filename $ take 1000 (effectiveInteractionDebug model pⱼ)
 
 experiment2 :: IO ()
 experiment2 = do
@@ -87,8 +99,10 @@ experiment1 = do
 
 main :: IO ()
 main = do
+  -- couplingsRenormalization
   experiment1
-  experiment2
+
+-- experiment2
 
 -- let lattice = Lattice (5, 5) squareLatticeVectors
 --     model = Model lattice 3

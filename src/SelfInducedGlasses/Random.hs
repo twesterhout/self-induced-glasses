@@ -5,8 +5,11 @@
 module SelfInducedGlasses.Random (Xoshiro256PlusPlus, mkXoshiro256PlusPlus) where
 
 import Control.Monad.Primitive
+import Control.Monad.ST
 import Data.Bits
 import Data.Primitive.ByteArray
+import qualified Data.Vector as B
+import qualified Data.Vector.Generic as G
 import Data.Word
 import Foreign.Ptr (Ptr, castPtr)
 import GHC.Prim
@@ -33,6 +36,9 @@ mkXoshiro256PlusPlus seed = do
 
 foreign import ccall unsafe "next"
   nextXoshiro256PlusPlus :: Ptr Word64 -> IO Word64
+
+foreign import ccall unsafe "jump"
+  jumpXoshiro256PlusPlus :: Ptr Word64 -> IO ()
 
 -- unsafeRotateL :: Word64 -> Int -> Word64
 -- unsafeRotateL w k = (unsafeShiftL w k) .|. (unsafeShiftR w (64 - k))
@@ -85,33 +91,80 @@ instance (PrimMonad m) => FrozenGen Xoshiro256PlusPlusState m where
 --   uniformShortByteString n g = lift $ uniformShortByteString n g
 
 next :: PrimMonad m => Xoshiro256PlusPlus (PrimState m) -> m Word64
-next (Xoshiro256PlusPlus (MutableByteArray v)) = primitive $ \s0 ->
-  case nextImpl# v s0 of
-    (# s1, r #) -> (# s1, (W64# r) #)
+next (Xoshiro256PlusPlus v) =
+  unsafeIOToPrim $
+    nextXoshiro256PlusPlus (castPtr (mutableByteArrayContents v))
+-- primitive $ \s0 ->
+-- case nextImpl# v s0 of
+--   (# s1, r #) -> (# s1, (W64# r) #)
+{-# SCC next #-}
 
-unsafeRotateL# :: Word# -> Int# -> Word#
-unsafeRotateL# w k = (uncheckedShiftL# w k) `or#` (uncheckedShiftRL# w (64# -# k))
+jump :: PrimMonad m => Xoshiro256PlusPlus (PrimState m) -> m ()
+jump (Xoshiro256PlusPlus v) =
+  unsafeIOToPrim $
+    jumpXoshiro256PlusPlus (castPtr (mutableByteArrayContents v))
+-- primitive $ \s0 ->
+-- case nextImpl# v s0 of
+--   (# s1, r #) -> (# s1, (W64# r) #)
+{-# SCC jump #-}
 
-nextImpl# :: MutableByteArray# d -> State# d -> (# State# d, Word# #)
-nextImpl# v s0 =
-  case readWordArray# v 0# s0 of
-    (# s1, v0 #) ->
-      case readWordArray# v 1# s1 of
-        (# s2, v1 #) ->
-          case readWordArray# v 2# s2 of
-            (# s3, v2 #) ->
-              case readWordArray# v 3# s3 of
-                (# s4, v3 #) ->
-                  let result = (unsafeRotateL# (v0 `plusWord#` v3) 23#) `plusWord#` v0
-                      t = v1 `uncheckedShiftL#` 17#
-                      v2' = v0 `xor#` v2
-                      v3' = v1 `xor#` v3
-                      v1' = v2' `xor#` v1
-                      v0' = v3' `xor#` v0
-                      v2'' = t `xor#` v2'
-                      v3'' = unsafeRotateL# v3' 45#
-                   in case writeWordArray# v 0# v0' s4 of
-                        s5 -> case writeWordArray# v 1# v1' s5 of
-                          s6 -> case writeWordArray# v 2# v2'' s6 of
-                            s7 -> case writeWordArray# v 3# v3'' s7 of
-                              s8 -> (# s8, result #)
+jump' :: Xoshiro256PlusPlusState -> Xoshiro256PlusPlusState
+jump' (Xoshiro256PlusPlusState v) = runST $ do
+  v' <- thawByteArray v 0 (sizeofByteArray v)
+  jump (Xoshiro256PlusPlus v')
+  Xoshiro256PlusPlusState <$> unsafeFreezeByteArray v'
+
+splitForParallel :: Int -> Xoshiro256PlusPlusState -> B.Vector Xoshiro256PlusPlusState
+splitForParallel n s₀ = G.iterateN n jump' s₀
+
+-- unsafeRotateL# :: Word# -> Int# -> Word#
+-- unsafeRotateL# w k = (uncheckedShiftL# w k) `or#` (uncheckedShiftRL# w (64# -# k))
+
+-- nextImpl# :: MutableByteArray# d -> State# d -> (# State# d, Word# #)
+-- nextImpl# v s0 =
+--   case readWordArray# v 0# s0 of
+--     (# s1, v0 #) ->
+--       case readWordArray# v 1# s1 of
+--         (# s2, v1 #) ->
+--           case readWordArray# v 2# s2 of
+--             (# s3, v2 #) ->
+--               case readWordArray# v 3# s3 of
+--                 (# s4, v3 #) ->
+--                   let result = (unsafeRotateL# (v0 `plusWord#` v3) 23#) `plusWord#` v0
+--                       t = v1 `uncheckedShiftL#` 17#
+--                       v2' = v0 `xor#` v2
+--                       v3' = v1 `xor#` v3
+--                       v1' = v2' `xor#` v1
+--                       v0' = v3' `xor#` v0
+--                       v2'' = t `xor#` v2'
+--                       v3'' = unsafeRotateL# v3' 45#
+--                    in case writeWordArray# v 0# v0' s4 of
+--                         s5 -> case writeWordArray# v 1# v1' s5 of
+--                           s6 -> case writeWordArray# v 2# v2'' s6 of
+--                             s7 -> case writeWordArray# v 3# v3'' s7 of
+--                               s8 -> (# s8, result #)
+
+-- void jump(uint64_t s[4]) {
+--   static const uint64_t JUMP[] = {0x180ec6d33cfd0aba, 0xd5a61266f0c9392c,
+--                                   0xa9582618e03fc9aa, 0x39abdc4529b1661c};
+--
+--   uint64_t s0 = 0;
+--   uint64_t s1 = 0;
+--   uint64_t s2 = 0;
+--   uint64_t s3 = 0;
+--   for (int i = 0; i < sizeof JUMP / sizeof *JUMP; i++)
+--     for (int b = 0; b < 64; b++) {
+--       if (JUMP[i] & UINT64_C(1) << b) {
+--         s0 ^= s[0];
+--         s1 ^= s[1];
+--         s2 ^= s[2];
+--         s3 ^= s[3];
+--       }
+--       next(s);
+--     }
+--
+--   s[0] = s0;
+--   s[1] = s1;
+--   s[2] = s2;
+--   s[3] = s3;
+-- }

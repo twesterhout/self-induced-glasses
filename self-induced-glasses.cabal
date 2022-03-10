@@ -58,6 +58,7 @@ library
   build-depends:       vector
                      , text
                      , deepseq
+                     , bytestring
                      , random >= 1.2
                      , primitive
                      , ghc-prim
