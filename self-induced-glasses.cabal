@@ -65,6 +65,8 @@ library
                      , mtl
                      , MemoTrie
                      , hdf5-hs
+                     , list-t
+                     , unliftio
                      -- , co-log
 
 executable self-induced-glasses
@@ -78,6 +80,7 @@ executable self-induced-glasses
                      , mtl
                      , text
                      , hdf5-hs
+                     , list-t
   ghc-options:         -threaded
                        -rtsopts
                        -with-rtsopts=-N

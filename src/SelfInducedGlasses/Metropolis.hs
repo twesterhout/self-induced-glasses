@@ -163,3 +163,15 @@ thermalize ::
   MetropolisT m ℝ
 thermalize β numberSweeps sweepSize g = snd <$> manySweeps β 1 (numberSweeps * sweepSize) g
 {-# SCC thermalize #-}
+
+anneal ::
+  (PrimMonad m, StatefulGen g m) =>
+  [(ℝ, Int, Int)] ->
+  g ->
+  MetropolisT m [(DenseMatrix S.Vector Word64, ℝ)]
+anneal steps g = do
+  (DenseMatrix n _ _) <- asks msCoupling
+  let sweepSize = n
+  forM steps $ \(β, numberThermalization, numberGathering) -> do
+    thermalize β numberThermalization sweepSize g
+    manySweeps β numberGathering sweepSize g

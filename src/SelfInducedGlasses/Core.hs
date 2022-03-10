@@ -192,7 +192,7 @@ effectiveInteractionLoop (Model (Lattice (!width, !height) latticeVectors) λ) !
 effectiveInteraction :: Model -> Int -> Point Int -> ℝ
 effectiveInteraction model rₘₐₓ pⱼ
   | pⱼ == (P 0 0) = 0
-  | otherwise = trace ("Computing " <> show pⱼ <> " ...") $ go 0 rₘₐₓ
+  | otherwise = go 0 rₘₐₓ -- trace ("Computing " <> show pⱼ <> " ...") $
   where
     go !acc !r
       | r < 0 = acc

@@ -6,9 +6,10 @@ module SelfInducedGlasses.Analysis where
 import Control.Monad (forM_, unless)
 import Control.Monad.ST (runST)
 import Data.Bits
+import qualified Data.ByteString.Builder as Builder
 import qualified Data.HDF5 as H5
 import Data.List (intercalate)
-import Data.Text (Text)
+import Data.Text (Text, pack, unpack)
 import Data.Vector.Generic (Vector, (!))
 import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Generic.Mutable as GM
@@ -65,6 +66,15 @@ magnetizationPerSite (Configuration v) = G.sum v / fromIntegral (G.length v)
 
 energyPerSite :: DenseMatrix S.Vector ℝ -> Configuration -> ℝ
 energyPerSite couplings@(DenseMatrix n _ _) x = totalEnergy couplings x / fromIntegral n
+
+computeLocalObservables :: DenseMatrix S.Vector ℝ -> DenseMatrix S.Vector Word64 -> Text -> IO ()
+computeLocalObservables couplings@(DenseMatrix n _ _) states filename = do
+  let configurations = fmap (unpackConfiguration n) (denseMatrixRows states)
+      observables = fmap (\ !σ -> (energyPerSite couplings σ, magnetizationPerSite σ)) configurations
+      renderRow (e, m) = mconcat $ [Builder.floatDec e, Builder.charUtf8 ',', Builder.floatDec m]
+      renderTable rows = mconcat [renderRow r <> Builder.charUtf8 '\n' | r <- rows]
+  withFile (unpack filename) WriteMode $ \h ->
+    Builder.hPutBuilder h (renderTable observables)
 
 saveForGnuplot :: Lattice -> FilePath -> Configuration -> IO ()
 saveForGnuplot (Lattice (width, height) _) filepath (Configuration v) = do
