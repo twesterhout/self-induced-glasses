@@ -52,8 +52,8 @@ library
                        cbits/xoshiro256plusplus.c
   cc-options:          -O3 -DNDEBUG
   include-dirs:        cbits
-  extra-lib-dirs:      /usr/lib/x86_64-linux-gnu/openblas-openmp
-  extra-libraries:     openblas
+  -- extra-lib-dirs:      /usr/lib/x86_64-linux-gnu/openblas-openmp
+  extra-libraries:     blas
                      , fftw3f
   build-depends:       vector
                      , text
@@ -65,7 +65,7 @@ library
                      , mtl
                      , MemoTrie
                      , hdf5-hs
-                     , co-log
+                     -- , co-log
 
 executable self-induced-glasses
   import:              common-options
