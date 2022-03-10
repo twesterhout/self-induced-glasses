@@ -20,6 +20,7 @@ import Foreign.C.Types (CFloat (..), CInt (..), CPtrdiff (..))
 import Foreign.Ptr (Ptr, castPtr)
 import GHC.Stack
 import SelfInducedGlasses.Core
+import SelfInducedGlasses.Interaction (Lattice (..))
 import System.IO
 import qualified System.IO.Unsafe
 

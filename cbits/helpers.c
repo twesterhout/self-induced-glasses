@@ -4,6 +4,11 @@
 #include <fftw3.h>
 #include <stdlib.h>
 
+// float effective_interaction_loop(sig_model const *model, int const px,
+//                                  int const py, int const radius) {
+//
+// }
+
 float energy_change_upon_flip(ptrdiff_t const n,
                               float const *const restrict couplings,
                               float const *const restrict x,

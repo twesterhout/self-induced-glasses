@@ -16,6 +16,7 @@ import qualified ListT
 import SelfInducedGlasses
 import SelfInducedGlasses.Analysis
 import SelfInducedGlasses.Core
+import SelfInducedGlasses.Interaction
 import SelfInducedGlasses.Metropolis
 import SelfInducedGlasses.Random
 import System.IO
@@ -78,17 +79,15 @@ experiment1 = do
       lattice = Lattice (n, n) squareLatticeVectors
       λ = 20.0
       model = Model lattice λ
-      couplings = buildInteractionMatrix lattice (effectiveInteraction model 200)
+      !couplings = buildCouplings model
       options = SamplingOptions couplings Nothing
       annealingSteps =
-        [ (0.1, 10000, 10000),
+        [ (0.10, 10000, 10000),
           (0.11, 10000, 10000),
           (0.12, 10000, 10000),
           (0.13, 10000, 10000),
           (0.14, 10000, 10000),
-          (0.15, 10000, 10000),
-          (0.16, 10000, 10000),
-          (0.17, 10000, 10000)
+          (0.15, 10000, 10000)
         ]
       filename = pack $ printf "data/annealing_result_n=%d_λ=%f.h5" n λ
       sample g = do
@@ -128,7 +127,8 @@ main :: IO ()
 main = do
   -- couplingsRenormalization
   experiment1
-  experiment2
+
+-- experiment2
 
 -- let lattice = Lattice (5, 5) squareLatticeVectors
 --     model = Model lattice 3

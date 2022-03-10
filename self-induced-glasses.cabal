@@ -47,6 +47,7 @@ library
                        SelfInducedGlasses.Core
                        SelfInducedGlasses.Metropolis
                        SelfInducedGlasses.Analysis
+                       SelfInducedGlasses.Interaction
                        SelfInducedGlasses.Random
   c-sources:           cbits/helpers.c
                        cbits/xoshiro256plusplus.c
@@ -58,6 +59,8 @@ library
   build-depends:       vector
                      , text
                      , deepseq
+                     , scheduler
+                     , containers
                      , bytestring
                      , random >= 1.2
                      , primitive
