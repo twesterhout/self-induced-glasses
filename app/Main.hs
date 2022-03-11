@@ -84,10 +84,12 @@ experiment1 = do
       !couplings = buildCouplings model
       options = SamplingOptions couplings Nothing
       annealingSteps =
-        [ (0.05, 10000, 50000),
-          (0.10, 10000, 50000),
-          (0.15, 10000, 50000),
-          (0.2, 10000, 50000)
+        [ (0.10, 10000, 20000),
+          (0.2, 10000, 20000),
+          (0.4, 10000, 20000),
+          (0.8, 10000, 20000),
+          (1.6, 10000, 20000),
+          (3.2, 10000, 20000)
         ]
       filename = pack $ printf "data/annealing_result_n=%d_λ=%f.h5" n λ
       sample g = do
@@ -128,7 +130,7 @@ experiment1 = do
 main :: IO ()
 main = do
   -- couplingsRenormalization
-  -- experiment1
+  experiment1
   experiment2
 
 -- let lattice = Lattice (5, 5) squareLatticeVectors

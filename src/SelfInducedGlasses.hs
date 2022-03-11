@@ -6,5 +6,5 @@
 -- See README for more info
 module SelfInducedGlasses where
 
-import SelfInducedGlasses.Core
-import SelfInducedGlasses.Metropolis
+-- import SelfInducedGlasses.Core
+-- import SelfInducedGlasses.Metropolis

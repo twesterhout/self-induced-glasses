@@ -3,24 +3,29 @@
 
 module SelfInducedGlasses.Analysis where
 
+-- import Control.DeepSeq (force)
 import Control.Monad (forM_, unless)
-import Control.Monad.ST (runST)
+-- import Control.Monad.ST (runST)
+import Control.Scheduler
 import Data.Bits
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.HDF5 as H5
-import Data.List (intercalate)
-import Data.Text (Text, pack, unpack)
-import Data.Vector.Generic (Vector, (!))
+-- import Data.List (intercalate)
+import Data.Text (Text, unpack)
+-- import qualified Data.Vector as B
+import Data.Vector.Generic (Vector)
 import qualified Data.Vector.Generic as G
-import qualified Data.Vector.Generic.Mutable as GM
+-- import qualified Data.Vector.Generic.Mutable as GM
 import qualified Data.Vector.Storable as S
 import qualified Data.Vector.Storable.Mutable as SM
+import qualified Data.Vector.Unboxed as U
 import Data.Word
 import Foreign.C.Types (CFloat (..), CInt (..), CPtrdiff (..))
 import Foreign.Ptr (Ptr, castPtr)
+-- import GHC.IO.Handle (BufferMode (BlockBuffering), hSetBuffering)
 import GHC.Stack
 import SelfInducedGlasses.Core
-import SelfInducedGlasses.Interaction (Lattice (..))
+-- import SelfInducedGlasses.Interaction (Lattice (..))
 import System.IO
 import qualified System.IO.Unsafe
 
@@ -76,13 +81,30 @@ magnetizationPerSite (Configuration n v) = m / fromIntegral n
 energyPerSite :: Couplings -> Configuration -> ℝ
 energyPerSite couplings x@(Configuration n _) = totalEnergy couplings x / fromIntegral n
 
+localObservables :: Couplings -> ConfigurationBatch -> U.Vector (ℝ, ℝ)
+localObservables couplings states =
+  System.IO.Unsafe.unsafePerformIO $ do
+    putStrLn "[*] Computing local observables ..."
+    !r <- G.concat <$> traverseConcurrently Par process chunks
+    putStrLn "[+] Done!"
+    pure r
+  where
+    chunks = batchChunksOf chunkSize states
+    compute σ =
+      let !e = energyPerSite couplings σ
+          !m = magnetizationPerSite σ
+       in (e, m)
+    -- We go through unboxed vector to force all results to be fully computed
+    process = pure . U.fromList . fmap compute . batchToList
+    chunkSize = 1000
+
 computeLocalObservables :: Couplings -> ConfigurationBatch -> Text -> IO ()
 computeLocalObservables couplings states filename = do
-  let configurations = batchToList states
-      observables = fmap (\ !σ -> (energyPerSite couplings σ, magnetizationPerSite σ)) configurations
-      renderRow (!e, !m) = Builder.floatDec e <> Builder.charUtf8 ',' <> Builder.floatDec m
-      renderTable rows = mconcat [renderRow r <> Builder.charUtf8 '\n' | r <- rows]
-  withFile (unpack filename) WriteMode $ \h ->
+  let observables = localObservables couplings states
+      renderRow (e, m) = Builder.floatDec e <> Builder.charUtf8 ',' <> Builder.floatDec m
+      renderTable rows = G.foldl' (\ !b !r -> b <> renderRow r <> Builder.charUtf8 '\n') mempty rows
+  {-# SCC saving #-} withBinaryFile (unpack filename) WriteMode $ \h -> do
+    hSetBuffering h (BlockBuffering Nothing) -- (Just 65536))
     Builder.hPutBuilder h (renderTable observables)
 
 computeAutocorrFunction :: ConfigurationBatch -> Text -> IO ()
@@ -153,24 +175,40 @@ integratedAutocorrTime ρs = G.unsafeIndex τs window
     τs = G.map (\ρ -> 2 * ρ - 1) (cumsum ρs)
     window = autoWindow 5 τs
 
-extractSingleSpinEvolution :: DenseMatrix S.Vector Word64 -> Int -> S.Vector ℝ
-extractSingleSpinEvolution (DenseMatrix n numberWords v) i =
-  G.generate n (\ !k -> toFloat $ v ! (wordIndex + k * numberWords) `unsafeShiftR` bitIndex)
+foreign import capi unsafe "helpers.h extract_evolution"
+  extract_evolution :: Int -> Int -> Ptr Word64 -> Int -> Ptr CFloat -> IO ()
+
+extractSingleSpinEvolution :: ConfigurationBatch -> Int -> S.Vector ℝ
+extractSingleSpinEvolution (ConfigurationBatch _ (DenseMatrix n numberWords v)) i =
+  -- System.IO.Unsafe.unsafePerformIO $ do
+  --   dest <- SM.unsafeNew n
+  --   S.unsafeWith v $ \inputPtr ->
+  --     SM.unsafeWith dest $ \outPtr ->
+  --       extract_evolution n numberWords inputPtr i (castPtr outPtr)
+  --   S.unsafeFreeze dest
+  G.generate n (toFloat . extractSpin)
   where
     (!wordIndex, !bitIndex) = i `divMod` 64
-    toFloat 0 = -1
-    toFloat _ = 1
+    extractSpin !k = (.&. 1) . (`unsafeShiftR` bitIndex) $ G.unsafeIndex v (wordIndex + k * numberWords)
+    toFloat !x = 2 * fromIntegral x - 1
+{-# SCC extractSingleSpinEvolution #-}
+
+foreign import capi unsafe "helpers.h contiguous_axpy"
+  contiguous_axpy :: Int -> CFloat -> Ptr CFloat -> Ptr CFloat -> IO ()
 
 autocorrStates :: ConfigurationBatch -> S.Vector ℝ
-autocorrStates (ConfigurationBatch numberBits m@(DenseMatrix n _ _)) = runST $ do
-  buffer <- G.unsafeThaw (G.replicate n 0)
-  let addToBuffer !v = addToBuffer' 0 v
-      addToBuffer' !i !v
-        | i < n = GM.modify buffer (+ v ! i) i >> addToBuffer' (i + 1) v
-        | otherwise = pure ()
-  forM_ [0 .. numberBits - 1] $ \i ->
-    addToBuffer $ autocorr (extractSingleSpinEvolution m i)
-  G.map (/ fromIntegral numberBits) <$> G.unsafeFreeze buffer
+autocorrStates states@(ConfigurationBatch numberBits (DenseMatrix n _ _)) =
+  System.IO.Unsafe.unsafePerformIO $ do
+    let process = pure . autocorr . extractSingleSpinEvolution states
+    putStrLn "[*] Running process ... "
+    autocorrs <- traverseConcurrently Seq process [0 .. numberBits - 1]
+    putStrLn "[*] Reducing ..."
+    buffer <- G.unsafeThaw (G.replicate n 0)
+    forM_ autocorrs $ \x ->
+      S.unsafeWith x $ \(xPtr :: Ptr Float) ->
+        SM.unsafeWith buffer $ \(yPtr :: Ptr Float) ->
+          contiguous_axpy n (1 / fromIntegral numberBits) (castPtr xPtr) (castPtr yPtr)
+    G.unsafeFreeze buffer
 
 -- autocorr :: (HasCallStack, Vector v Word64, Vector v ℝ) => Int -> Int -> DenseMatrix v Word64 -> v ℝ
 -- autocorr offset numberBits states = G.fromList $ fmap (computeOverlap numberBits s₀) states'

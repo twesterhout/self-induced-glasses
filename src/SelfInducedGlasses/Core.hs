@@ -160,6 +160,15 @@ batchToList (ConfigurationBatch n matrix) = Configuration n <$> denseMatrixRows 
 unsafeFreezeBatch :: PrimMonad m => MutableConfigurationBatch (PrimState m) -> m ConfigurationBatch
 unsafeFreezeBatch (MutableConfigurationBatch n matrix) = ConfigurationBatch n <$> unsafeFreezeDenseMatrix matrix
 
+batchChunksOf :: Int -> ConfigurationBatch -> [ConfigurationBatch]
+batchChunksOf chunkSize (ConfigurationBatch n matrix@(DenseMatrix totalSize _ _)) = go 0
+  where
+    getChunk !i = ConfigurationBatch n (sliceDenseMatrix 0 i chunkSize matrix)
+    go !i
+      | i + chunkSize <= totalSize = getChunk i : go (i + chunkSize)
+      | i < totalSize = [getChunk i]
+      | otherwise = []
+
 -- newtype Configuration = Configuration (S.Vector ℝ)
 --   deriving stock (Show, Eq)
 --

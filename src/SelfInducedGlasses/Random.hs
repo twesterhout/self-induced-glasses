@@ -2,18 +2,18 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UnboxedTuples #-}
 
-module SelfInducedGlasses.Random (Xoshiro256PlusPlus, mkXoshiro256PlusPlus) where
+module SelfInducedGlasses.Random (Xoshiro256PlusPlus, mkXoshiro256PlusPlus, splitForParallel) where
 
 import Control.Monad.Primitive
 import Control.Monad.ST
-import Data.Bits
+-- import Data.Bits
 import Data.Primitive.ByteArray
 import qualified Data.Vector as B
 import qualified Data.Vector.Generic as G
 import Data.Word
 import Foreign.Ptr (Ptr, castPtr)
-import GHC.Prim
-import GHC.Word (Word64 (..))
+-- import GHC.Prim
+-- import GHC.Word (Word64 (..))
 import System.Random.Stateful hiding (next)
 
 newtype Xoshiro256PlusPlus s = Xoshiro256PlusPlus (MutableByteArray s)
@@ -74,7 +74,7 @@ foreign import ccall unsafe "jump"
 
 instance (PrimMonad m, PrimState m ~ s) => StatefulGen (Xoshiro256PlusPlus s) m where
   uniformWord64 g = next g
-  uniformShortByteString n g = undefined
+  uniformShortByteString _ _ = undefined
 
 instance (PrimMonad m) => FrozenGen Xoshiro256PlusPlusState m where
   type MutableGen Xoshiro256PlusPlusState m = Xoshiro256PlusPlus (PrimState m)

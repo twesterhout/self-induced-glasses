@@ -23,7 +23,7 @@ static inline uint64_t rotl(const uint64_t x, int k) {
   return (x << k) | (x >> (64 - k));
 }
 
-uint64_t next(uint64_t s[4]) {
+uint64_t xoshiro256plusplus_next(uint64_t s[4]) {
   const uint64_t result = rotl(s[0] + s[3], 23) + s[0];
 
   const uint64_t t = s[1] << 17;
@@ -44,7 +44,7 @@ uint64_t next(uint64_t s[4]) {
    to 2^128 calls to next(); it can be used to generate 2^128
    non-overlapping subsequences for parallel computations. */
 
-void jump(uint64_t s[4]) {
+void xoshiro256plusplus_jump(uint64_t s[4]) {
   static const uint64_t JUMP[] = {0x180ec6d33cfd0aba, 0xd5a61266f0c9392c,
                                   0xa9582618e03fc9aa, 0x39abdc4529b1661c};
 
@@ -52,7 +52,7 @@ void jump(uint64_t s[4]) {
   uint64_t s1 = 0;
   uint64_t s2 = 0;
   uint64_t s3 = 0;
-  for (int i = 0; i < sizeof JUMP / sizeof *JUMP; i++)
+  for (int i = 0; i < (int)(sizeof JUMP / sizeof *JUMP); i++)
     for (int b = 0; b < 64; b++) {
       if (JUMP[i] & UINT64_C(1) << b) {
         s0 ^= s[0];
@@ -60,7 +60,7 @@ void jump(uint64_t s[4]) {
         s2 ^= s[2];
         s3 ^= s[3];
       }
-      next(s);
+      xoshiro256plusplus_next(s);
     }
 
   s[0] = s0;
@@ -74,7 +74,7 @@ void jump(uint64_t s[4]) {
    from each of which jump() will generate 2^64 non-overlapping
    subsequences for parallel distributed computations. */
 
-void long_jump(uint64_t s[4]) {
+void xoshiro256plusplus_long_jump(uint64_t s[4]) {
   static const uint64_t LONG_JUMP[] = {0x76e15d3efefdcbbf, 0xc5004e441c522fb3,
                                        0x77710069854ee241, 0x39109bb02acbe635};
 
@@ -82,7 +82,7 @@ void long_jump(uint64_t s[4]) {
   uint64_t s1 = 0;
   uint64_t s2 = 0;
   uint64_t s3 = 0;
-  for (int i = 0; i < sizeof LONG_JUMP / sizeof *LONG_JUMP; i++)
+  for (int i = 0; i < (int)(sizeof LONG_JUMP / sizeof *LONG_JUMP); i++)
     for (int b = 0; b < 64; b++) {
       if (LONG_JUMP[i] & UINT64_C(1) << b) {
         s0 ^= s[0];
@@ -90,7 +90,7 @@ void long_jump(uint64_t s[4]) {
         s2 ^= s[2];
         s3 ^= s[3];
       }
-      next(s);
+      xoshiro256plusplus_next(s);
     }
 
   s[0] = s0;

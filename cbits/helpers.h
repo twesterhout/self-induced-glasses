@@ -17,3 +17,8 @@ ptrdiff_t hamming_weight(ptrdiff_t n, uint64_t const *x);
 
 int autocorrelation(ptrdiff_t const n, float const *const signal,
                     float *const out);
+
+void extract_evolution(HsInt batch_size, HsInt number_words,
+                       uint64_t const *input, HsInt i, float *out);
+
+void contiguous_axpy(HsInt n, float a, float const *x, float *y);

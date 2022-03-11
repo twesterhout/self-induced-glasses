@@ -11,7 +11,7 @@ module SelfInducedGlasses.Metropolis where
 import Control.Monad.Primitive
 import Control.Monad.Reader
 import Control.Monad.ST
-import Control.Monad.State.Strict
+-- import Control.Monad.State.Strict
 import Data.Bits
 import Data.Primitive.Ptr
 import qualified Data.Vector.Generic as G
@@ -20,7 +20,7 @@ import qualified Data.Vector.Storable as S
 import qualified Data.Vector.Storable.Mutable as SM
 import Data.Word
 import Foreign.ForeignPtr (withForeignPtr)
-import Foreign.Storable (Storable)
+-- import Foreign.Storable (Storable)
 import SelfInducedGlasses.Core
 import System.Random.Stateful
 
@@ -126,7 +126,7 @@ step !β !g = do
     else flipSpin i x >> pure True
 {-# SCC step #-}
 
-sweep :: forall m g v. (PrimMonad m, StatefulGen g m) => ℝ -> Int -> g -> MetropolisT m ℝ
+sweep :: forall m g. (PrimMonad m, StatefulGen g m) => ℝ -> Int -> g -> MetropolisT m ℝ
 sweep !β !n !g = go 0 n
   where
     go :: Int -> Int -> MetropolisT m ℝ
@@ -186,5 +186,5 @@ anneal ::
 anneal steps g = do
   (Couplings (DenseMatrix sweepSize _ _)) <- asks msCoupling
   forM steps $ \(β, numberThermalization, numberGathering) -> do
-    thermalize β numberThermalization sweepSize g
+    _ <- thermalize β numberThermalization sweepSize g
     manySweeps β numberGathering sweepSize g

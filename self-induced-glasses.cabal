@@ -51,8 +51,18 @@ library
                        SelfInducedGlasses.Random
   c-sources:           cbits/helpers.c
                        cbits/xoshiro256plusplus.c
-  cc-options:          -O3 -DNDEBUG
+                       third_party/kissfft-131.1.0/kiss_fft.c
+                       third_party/kissfft-131.1.0/kfc.c
+                       -- third_party/kissfft-131.1.0/kiss_fftnd.c
+                       -- third_party/kissfft-131.1.0/kiss_fftndr.c
+                       -- third_party/kissfft-131.1.0/kiss_fftr.c
+  cc-options:          -Wall -Wextra -pedantic
+                       -O3 -ffast-math -march=native -DNDEBUG
+                       -DUSE_KAHAN=1 -DCHECK_CORRECTNESS=0 -DUSE_FFTW=0
+                       -Dkiss_fft_scalar=float -DKISS_FFT_USE_ALLOCA=0
   include-dirs:        cbits
+                     , third_party/simde-amalgamated-0.7.2
+                     , third_party/kissfft-131.1.0
   -- extra-lib-dirs:      /usr/lib/x86_64-linux-gnu/openblas-openmp
   extra-libraries:     blas
                      , fftw3f
