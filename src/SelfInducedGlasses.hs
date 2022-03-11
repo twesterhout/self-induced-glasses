@@ -4,16 +4,7 @@
 -- Maintainer: Tom Westerhout <14264576+twesterhout@users.noreply.github.com>
 --
 -- See README for more info
-module SelfInducedGlasses
-  ( someFunc,
-    Point (..),
-    effectiveInteractionDebug,
-    effectiveInteraction,
-    -- testLattice1,
-    -- testModel1,
-    closestToOrigin,
-  )
-where
+module SelfInducedGlasses where
 
 import SelfInducedGlasses.Core
 import SelfInducedGlasses.Metropolis

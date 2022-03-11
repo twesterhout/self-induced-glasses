@@ -61,33 +61,63 @@ computeOverlap n a b = fromIntegral (go 0 0) / fromIntegral n
 --       _ -> error "too few states"
 -- {-# SCC autocorr #-}
 
+foreign import capi unsafe "hamming_weight"
+  hamming_weight :: CPtrdiff -> Ptr Word64 -> IO CPtrdiff
+
 magnetizationPerSite :: Configuration -> ℝ
-magnetizationPerSite (Configuration v) = G.sum v / fromIntegral (G.length v)
+magnetizationPerSite (Configuration n v) = m / fromIntegral n
+  where
+    !m =
+      fromIntegral $
+        System.IO.Unsafe.unsafePerformIO $
+          S.unsafeWith v $ hamming_weight (fromIntegral n)
 {-# SCC magnetizationPerSite #-}
 
-energyPerSite :: DenseMatrix S.Vector ℝ -> Configuration -> ℝ
-energyPerSite couplings@(DenseMatrix n _ _) x = totalEnergy couplings x / fromIntegral n
+energyPerSite :: Couplings -> Configuration -> ℝ
+energyPerSite couplings x@(Configuration n _) = totalEnergy couplings x / fromIntegral n
 
-computeLocalObservables :: DenseMatrix S.Vector ℝ -> DenseMatrix S.Vector Word64 -> Text -> IO ()
-computeLocalObservables couplings@(DenseMatrix n _ _) states filename = do
-  let configurations = fmap (unpackConfiguration n) (denseMatrixRows states)
+computeLocalObservables :: Couplings -> ConfigurationBatch -> Text -> IO ()
+computeLocalObservables couplings states filename = do
+  let configurations = batchToList states
       observables = fmap (\ !σ -> (energyPerSite couplings σ, magnetizationPerSite σ)) configurations
-      renderRow (e, m) = mconcat $ [Builder.floatDec e, Builder.charUtf8 ',', Builder.floatDec m]
+      renderRow (!e, !m) = Builder.floatDec e <> Builder.charUtf8 ',' <> Builder.floatDec m
       renderTable rows = mconcat [renderRow r <> Builder.charUtf8 '\n' | r <- rows]
   withFile (unpack filename) WriteMode $ \h ->
     Builder.hPutBuilder h (renderTable observables)
 
-saveForGnuplot :: Lattice -> FilePath -> Configuration -> IO ()
-saveForGnuplot (Lattice (width, height) _) filepath (Configuration v) = do
-  let m = DenseMatrix height width v
-  withFile filepath WriteMode $ \h ->
-    forM_ [0 .. height - 1] $ \i ->
-      hPutStrLn h
-        . intercalate "\t"
-        . fmap show
-        . G.toList
-        . getRow (height - 1 - i)
-        $ m
+computeAutocorrFunction :: ConfigurationBatch -> Text -> IO ()
+computeAutocorrFunction states filename = do
+  let table =
+        mconcat $
+          fmap (\f -> Builder.floatDec f <> Builder.charUtf8 '\n') $
+            G.toList $
+              autocorrStates states
+  withFile (unpack filename) WriteMode $ \h ->
+    Builder.hPutBuilder h table
+
+-- -- autocorrFunction100 = autocorr 50000 n states
+-- -- withFile ("energy_" <> show β <> ".dat") WriteMode $ \h ->
+-- --   forM_ energy (hPutStrLn h . show)
+-- -- withFile ("magnetization_" <> show β <> ".dat") WriteMode $ \h ->
+-- --   forM_ magnetization (hPutStrLn h . show)
+-- print $ integratedAutocorrTime (G.take 1000 autocorrFunction)
+-- print $ integratedAutocorrTime (G.take 10000 autocorrFunction)
+-- print $ integratedAutocorrTime (G.take 20000 autocorrFunction)
+-- print $ integratedAutocorrTime (G.take 30000 autocorrFunction)
+-- withFile ("autocorr_" <> show β <> ".dat") WriteMode $ \h ->
+--   G.forM_ autocorrFunction (hPutStrLn h . show)
+
+-- saveForGnuplot :: Lattice -> FilePath -> Configuration -> IO ()
+-- saveForGnuplot (Lattice (width, height) _) filepath (Configuration v) = do
+--   let m = DenseMatrix height width v
+--   withFile filepath WriteMode $ \h ->
+--     forM_ [0 .. height - 1] $ \i ->
+--       hPutStrLn h
+--         . intercalate "\t"
+--         . fmap show
+--         . G.toList
+--         . getRow (height - 1 - i)
+--         $ m
 
 foreign import capi unsafe "helpers.h autocorrelation"
   c_autocorrelation :: CPtrdiff -> Ptr CFloat -> Ptr CFloat -> IO CInt
@@ -131,8 +161,8 @@ extractSingleSpinEvolution (DenseMatrix n numberWords v) i =
     toFloat 0 = -1
     toFloat _ = 1
 
-autocorrStates :: Int -> DenseMatrix S.Vector Word64 -> S.Vector ℝ
-autocorrStates numberBits m@(DenseMatrix n _ _) = runST $ do
+autocorrStates :: ConfigurationBatch -> S.Vector ℝ
+autocorrStates (ConfigurationBatch numberBits m@(DenseMatrix n _ _)) = runST $ do
   buffer <- G.unsafeThaw (G.replicate n 0)
   let addToBuffer !v = addToBuffer' 0 v
       addToBuffer' !i !v

@@ -36,17 +36,19 @@ couplingsRenormalization = do
 
 experiment2 :: IO ()
 experiment2 = do
-  let n = (10 :: Int)
-      λ = (20 :: ℝ)
+  let n = (25 :: Int)
+      λ = (7.5 :: ℝ)
       filename = pack $ printf "data/annealing_result_n=%d_λ=%f.h5" n λ
   H5.withFile filename H5.ReadOnly $ \h -> do
-    (couplings :: DenseMatrix S.Vector ℝ) <- H5.open h "couplings" >>= H5.readDataset
+    couplings <- fmap Couplings $ H5.readDataset =<< H5.open h "couplings"
     ListT.traverse_ pure $
       H5.forGroupM h $ \case
         g@H5.Group -> do
-          states <- H5.open g "states" >>= H5.readDataset
           (H5.Scalar (β :: ℝ)) <- H5.readAttribute g "β"
-          liftIO $ computeLocalObservables couplings states (pack $ printf "data/observables_n=%d_λ=%f_β=%f" n λ β)
+          liftIO $ putStrLn (printf "[*] Processing results for β=%f ..." β)
+          states <- fmap (ConfigurationBatch (n * n)) $ H5.readDataset =<< H5.open g "states"
+          liftIO $ computeLocalObservables couplings states (pack $ printf "data/observables_n=%d_λ=%f_β=%f.csv" n λ β)
+          liftIO $ computeAutocorrFunction states (pack $ printf "data/autocorr_n=%d_λ=%f_β=%f.csv" n λ β)
         _ -> pure ()
 -- computeLocalObservables :: DenseMatrix S.Vector ℝ -> DenseMatrix S.Vector Word64 -> Text -> IO ()
 
@@ -75,19 +77,17 @@ experiment2 = do
 
 experiment1 :: IO ()
 experiment1 = do
-  let n = 10
+  let n = 25
       lattice = Lattice (n, n) squareLatticeVectors
-      λ = 20.0
+      λ = 7.5
       model = Model lattice λ
       !couplings = buildCouplings model
       options = SamplingOptions couplings Nothing
       annealingSteps =
-        [ (0.10, 10000, 10000),
-          (0.11, 10000, 10000),
-          (0.12, 10000, 10000),
-          (0.13, 10000, 10000),
-          (0.14, 10000, 10000),
-          (0.15, 10000, 10000)
+        [ (0.05, 10000, 50000),
+          (0.10, 10000, 50000),
+          (0.15, 10000, 50000),
+          (0.2, 10000, 50000)
         ]
       filename = pack $ printf "data/annealing_result_n=%d_λ=%f.h5" n λ
       sample g = do
@@ -99,11 +99,13 @@ experiment1 = do
         -- lift $ print acceptance
         lift $
           H5.withFile filename H5.WriteTruncate $ \h -> do
-            H5.createDataset h "couplings" couplings
+            case couplings of
+              (Couplings m) -> H5.createDataset h "couplings" m
             H5.open h "couplings" >>= \(d :: H5.Dataset) -> H5.writeAttribute d "λ" (H5.Scalar λ)
             forM_ (zip annealingSteps results) $ \((β, numberThermalization, _), (states, acceptance)) -> do
               group <- H5.createGroup h (pack $ printf "%f" β)
-              H5.createDataset group "states" states
+              case states of
+                (ConfigurationBatch _ m) -> H5.createDataset group "states" m
               H5.writeAttribute group "acceptance" (H5.Scalar acceptance)
               H5.writeAttribute group "thermalization" (H5.Scalar numberThermalization)
               H5.writeAttribute group "β" (H5.Scalar β)
@@ -126,9 +128,8 @@ experiment1 = do
 main :: IO ()
 main = do
   -- couplingsRenormalization
-  experiment1
-
--- experiment2
+  -- experiment1
+  experiment2
 
 -- let lattice = Lattice (5, 5) squareLatticeVectors
 --     model = Model lattice 3

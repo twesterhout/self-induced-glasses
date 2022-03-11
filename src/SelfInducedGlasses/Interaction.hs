@@ -210,8 +210,8 @@ buildInteractionMatrix model@(Model lattice@(Lattice (width, height) _) _) rₘ�
         !pⱼ = indexToPoint lattice j
         !δp = projectUsingTranslations lattice (pⱼ - pᵢ)
 
-buildCouplings :: Model -> DenseMatrix S.Vector ℝ
-buildCouplings model = buildInteractionMatrix model rₘₐₓ
+buildCouplings :: Model -> Couplings
+buildCouplings model = Couplings $ buildInteractionMatrix model rₘₐₓ
   where
     rₘₐₓ = 1000
 {-# SCC buildCouplings #-}

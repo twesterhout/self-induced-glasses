@@ -10,23 +10,27 @@ module SelfInducedGlasses.Metropolis where
 
 import Control.Monad.Primitive
 import Control.Monad.Reader
+import Control.Monad.ST
 import Control.Monad.State.Strict
+import Data.Bits
+import Data.Primitive.Ptr
 import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Generic.Mutable as GM
 import qualified Data.Vector.Storable as S
 import qualified Data.Vector.Storable.Mutable as SM
 import Data.Word
+import Foreign.ForeignPtr (withForeignPtr)
 import Foreign.Storable (Storable)
 import SelfInducedGlasses.Core
 import System.Random.Stateful
 
 data SamplingOptions = SamplingOptions
-  { soCoupling :: {-# UNPACK #-} !(DenseMatrix S.Vector ℝ),
+  { soCoupling :: {-# UNPACK #-} !Couplings,
     soInitialConfiguration :: !(Maybe Configuration)
   }
 
 data MetropolisState s = MetropolisState
-  { msCoupling :: {-# UNPACK #-} !(DenseMatrix S.Vector ℝ),
+  { msCoupling :: {-# UNPACK #-} !Couplings,
     msConfiguration :: {-# UNPACK #-} !(MutableConfiguration s),
     msDeltaEnergies :: {-# UNPACK #-} !(S.MVector s ℝ)
   }
@@ -59,14 +63,18 @@ deriving newtype instance
 --   uniformWord64 g = lift $ uniformWord64 g
 --   uniformShortByteString n g = lift $ uniformShortByteString n g
 
-randomConfigurationM :: (Monad m, StatefulGen g m) => Int -> g -> m Configuration
-randomConfigurationM n g = Configuration . G.map fromBool <$> G.replicateM n (uniformM g)
-  where
-    fromBool True = 1
-    fromBool False = -1
+randomConfigurationM :: (PrimMonad m, StatefulGen g m) => Int -> g -> m Configuration
+randomConfigurationM n g = do
+  let numberWords = (n + 63) `div` 64
+      rest = n `mod` 64
+  buffer <- G.unsafeThaw =<< G.replicateM numberWords (uniformM g)
+  when (rest /= 0) $ do
+    let mask = ((1 :: Word64) `unsafeShiftL` rest) - 1
+    GM.unsafeModify buffer (.&. mask) (numberWords - 1)
+  Configuration n <$> G.unsafeFreeze buffer
 
 randomConfiguration :: forall g. RandomGen g => Int -> g -> (Configuration, g)
-randomConfiguration n g = runStateGen g (randomConfigurationM n)
+randomConfiguration n g = runST $ runStateGenT g (randomConfigurationM n)
 
 prepareInitialState ::
   (PrimMonad m, StatefulGen g m) =>
@@ -74,11 +82,11 @@ prepareInitialState ::
   g ->
   m (MetropolisState (PrimState m))
 prepareInitialState options g = do
-  let coupling@(DenseMatrix n _ _) = soCoupling options
+  let coupling@(Couplings (DenseMatrix n _ _)) = soCoupling options
   v₀ <- case soInitialConfiguration options of
     Nothing -> randomConfigurationM n g
     Just v -> pure v
-  MetropolisState coupling <$> thaw v₀ <*> GM.new n
+  MetropolisState coupling <$> thawConfiguration v₀ <*> GM.new n
 
 runMetropolisT ::
   (PrimMonad m, StatefulGen g m) =>
@@ -91,31 +99,35 @@ runMetropolisT m options g = do
   runReaderT (unMetropolis (m g)) s
 
 flipSpin :: PrimMonad m => Int -> MutableConfiguration (PrimState m) -> m ()
-flipSpin i (MutableConfiguration v) = GM.unsafeModify v (* (-1)) i
+flipSpin !i (MutableConfiguration _ (SM.MVector _ fp)) = unsafeIOToPrim $
+  withForeignPtr fp $ \p -> do
+    w <- readOffPtr p wordIndex
+    writeOffPtr p wordIndex (complementBit w bitIndex)
+  where
+    (!wordIndex, !bitIndex) = i `divMod` 64
+-- {-# SCC flipSpin #-}
 {-# INLINE flipSpin #-}
 
 numberSpins :: MutableConfiguration s -> Int
-numberSpins (MutableConfiguration v) = GM.length v
+numberSpins (MutableConfiguration n _) = n
 {-# INLINE numberSpins #-}
 
 step :: forall m g. (PrimMonad m, StatefulGen g m) => ℝ -> g -> MetropolisT m Bool
 step !β !g = do
-  x <- asks msConfiguration
-  i <- lift $! uniformRM (0, numberSpins x - 1) g
-  coupling <- asks msCoupling
-  σ <- unsafeFreeze x
-  let δe = energyDifferenceUponFlip coupling i σ
+  (MetropolisState !coupling !x _) <- ask
+  !i <- lift $ uniformRM (0, numberSpins x - 1) g
+  !δe <- energyChangeUponFlip coupling i x
   if δe > 0
     then do
-      u <- lift $! uniformRM (0, 1) g
+      u <- lift $ uniformRM (0, 1) g
       if u < exp (-β * δe)
         then flipSpin i x >> pure True
         else pure False
     else flipSpin i x >> pure True
-{-# INLINE step #-}
+{-# SCC step #-}
 
-sweep :: forall m g v. (PrimMonad m, StatefulGen g m, GM.MVector v Word64) => ℝ -> Int -> Maybe (v (PrimState m) Word64) -> g -> MetropolisT m ℝ
-sweep !β !n !buffer !g = go 0 n
+sweep :: forall m g v. (PrimMonad m, StatefulGen g m) => ℝ -> Int -> g -> MetropolisT m ℝ
+sweep !β !n !g = go 0 n
   where
     go :: Int -> Int -> MetropolisT m ℝ
     go !acc !i
@@ -124,13 +136,9 @@ sweep !β !n !buffer !g = go 0 n
         if accepted
           then go (acc + 1) (i - 1)
           else go acc (i - 1)
-      | otherwise = do
-        case buffer of
-          Just dest -> do
-            σ <- unsafeFreeze =<< asks msConfiguration
-            packConfiguration σ dest
-          Nothing -> pure ()
-        pure $ fromIntegral acc / fromIntegral n
+      | otherwise =
+        let !acceptance = fromIntegral acc / fromIntegral n
+         in pure acceptance
 {-# SCC sweep #-}
 
 manySweeps ::
@@ -139,18 +147,24 @@ manySweeps ::
   Int ->
   Int ->
   g ->
-  MetropolisT m (DenseMatrix S.Vector Word64, ℝ)
+  MetropolisT m (ConfigurationBatch, ℝ)
 manySweeps !β !numberSweeps !sweepSize !g = do
-  (DenseMatrix n _ _) <- asks msCoupling
+  (Couplings (DenseMatrix n _ _)) <- asks msCoupling
   let numberWords = (n + 63) `div` 64
-  buffer <- DenseMatrix numberSweeps numberWords <$> GM.new (numberSweeps * numberWords)
+  buffer <-
+    MutableConfigurationBatch n
+      <$> DenseMatrix numberSweeps numberWords
+      <$> GM.new (numberSweeps * numberWords)
   let go !i !acc
         | i < numberSweeps = do
-          acc' <- sweep β sweepSize (Just (getMutableRow i buffer)) g
+          acc' <- sweep β sweepSize g
+          asks msConfiguration
+            >>= unsafeFreezeConfiguration
+            >>= insertConfiguration buffer i
           go (i + 1) (acc + acc')
         | otherwise = pure (acc / fromIntegral numberSweeps)
   acceptance <- go 0 0
-  states <- unsafeFreezeDenseMatrix buffer
+  states <- unsafeFreezeBatch buffer
   pure (states, acceptance)
 {-# SCC manySweeps #-}
 
@@ -168,10 +182,9 @@ anneal ::
   (PrimMonad m, StatefulGen g m) =>
   [(ℝ, Int, Int)] ->
   g ->
-  MetropolisT m [(DenseMatrix S.Vector Word64, ℝ)]
+  MetropolisT m [(ConfigurationBatch, ℝ)]
 anneal steps g = do
-  (DenseMatrix n _ _) <- asks msCoupling
-  let sweepSize = n
+  (Couplings (DenseMatrix sweepSize _ _)) <- asks msCoupling
   forM steps $ \(β, numberThermalization, numberGathering) -> do
     thermalize β numberThermalization sweepSize g
     manySweeps β numberGathering sweepSize g

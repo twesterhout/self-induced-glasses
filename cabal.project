@@ -6,17 +6,17 @@ package *
   executable-stripping: true
   library-stripping: true
   profiling: false
-  ghc-options: -fPIC -fexpose-all-unfoldings -fspecialise-aggressively
+  ghc-options: -fexpose-all-unfoldings -fspecialise-aggressively
 
 package primitive
   optimization: 2
   profiling: false
-  ghc-options: -fPIC -ffun-to-thunk -fno-full-laziness -fexpose-all-unfoldings -fspecialise-aggressively
+  ghc-options: -ffun-to-thunk -fno-full-laziness -fexpose-all-unfoldings -fspecialise-aggressively
 
 package self-induced-glasses
   optimization: 2
   profiling: true
-  ghc-options: -ffun-to-thunk -feager-blackholing -fno-full-laziness -fexpose-all-unfoldings -fspecialise-aggressively
+  ghc-options: -ffun-to-thunk -fno-full-laziness -fexpose-all-unfoldings -fspecialise-aggressively
 
 -- -fno-prof-auto 
 source-repository-package

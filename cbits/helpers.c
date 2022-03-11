@@ -9,23 +9,54 @@
 //
 // }
 
+static inline float read_spin(uint64_t const *const restrict x,
+                              ptrdiff_t const i) {
+  int const bit = (x[i / 64] >> (i % 64)) & 1;
+  return 2 * bit - 1;
+}
+
+static inline float packed_dot_product(ptrdiff_t const n,
+                                       float const *const restrict a,
+                                       uint64_t const *const restrict b) {
+  float acc = 0.0f;
+  for (ptrdiff_t i = 0; i < n; ++i) {
+    acc += a[i] * read_spin(b, i);
+  }
+  return acc;
+}
+
 float energy_change_upon_flip(ptrdiff_t const n,
                               float const *const restrict couplings,
-                              float const *const restrict x,
+                              uint64_t const *const restrict x,
                               ptrdiff_t const i) {
-  const float overlap = cblas_sdot(n, couplings + i * n, 1, x, 1);
-  const float s = x[i];
+  float const overlap = packed_dot_product(n, couplings + i * n, x);
+  float const s = read_spin(x, i);
   return 2 * overlap * s;
 }
 
 float total_energy(ptrdiff_t const n, float const *const restrict couplings,
-                   float const *const restrict x) {
+                   uint64_t const *const restrict x) {
   float e = 0.0f;
   for (ptrdiff_t k = 0; k < n; ++k) {
-    const float t = cblas_sdot(n, couplings + k * n, 1, x, 1);
-    e += x[k] * t;
+    const float t = packed_dot_product(n, couplings + k * n, x);
+    e += read_spin(x, k) * t;
   }
   return -e;
+}
+
+ptrdiff_t hamming_weight(ptrdiff_t const n, uint64_t const *const restrict x) {
+  ptrdiff_t m = 0;
+  ptrdiff_t const number_words = n / 64;
+  ptrdiff_t const rest = n % 64;
+  for (ptrdiff_t k = 0; k < number_words; ++k) {
+    m += __builtin_popcountl(x[k]);
+  }
+  if (rest != 0) {
+    uint64_t const mask = (((uint64_t)1) << rest) - 1;
+    uint64_t const t = x[number_words];
+    m += __builtin_popcountl(t & mask);
+  }
+  return m;
 }
 
 void recompute_energy_changes(ptrdiff_t const n,
