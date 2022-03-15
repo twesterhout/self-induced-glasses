@@ -34,10 +34,10 @@ mkXoshiro256PlusPlus seed = do
   writeByteArray b 3 w3
   pure $! Xoshiro256PlusPlus b
 
-foreign import ccall unsafe "next"
+foreign import ccall unsafe "xoshiro256plusplus_next"
   nextXoshiro256PlusPlus :: Ptr Word64 -> IO Word64
 
-foreign import ccall unsafe "jump"
+foreign import ccall unsafe "xoshiro256plusplus_jump"
   jumpXoshiro256PlusPlus :: Ptr Word64 -> IO ()
 
 -- unsafeRotateL :: Word64 -> Int -> Word64

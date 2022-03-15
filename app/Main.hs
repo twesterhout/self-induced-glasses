@@ -8,11 +8,13 @@ import Control.Monad.Primitive
 import Control.Monad.State.Strict
 import Control.Monad.Trans
 import qualified Data.HDF5 as H5
+import Data.List.Split (splitOn)
 import Data.Text (Text, pack)
 import Data.Vector (Vector)
 import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Storable as S
 import qualified ListT
+import Options.Applicative
 import SelfInducedGlasses
 import SelfInducedGlasses.Analysis
 import SelfInducedGlasses.Core
@@ -34,22 +36,93 @@ couplingsRenormalization = do
           filename = pack $ printf "couplings_renormalization_%f_%d.csv" λ y
        in dumpCouplingEvolutionToFile filename $ take 1000 (effectiveInteractionDebug model pⱼ)
 
-experiment2 :: IO ()
-experiment2 = do
-  let n = (25 :: Int)
-      λ = (7.5 :: ℝ)
-      filename = pack $ printf "data/annealing_result_n=%d_λ=%f.h5" n λ
+data MainSettings = MainSettings
+  { settingsSideLength :: !Int,
+    settingsLambda :: !ℝ,
+    settingsSeed :: !Int,
+    settingsSweepSize :: !Int,
+    settingsAnnealingSteps :: ![(ℝ, Int, Int)]
+  }
+
+pStep :: Parser (ℝ, Int, Int)
+pStep = f <$> strOption (long "step" <> help "(inverse temperature, thermalization steps, gathering steps)")
+  where
+    f s = case (splitOn "," s) of
+      [a, b, c] -> (read a, read b, read c)
+      _ -> error $ "invalid step: " <> s
+
+pMainSettings :: Parser MainSettings
+pMainSettings =
+  MainSettings
+    <$> option auto (short 'n' <> help "System side length")
+    <*> option auto (short 'λ' <> help "Interaction parameter λ")
+    <*> option auto (long "seed" <> help "Random number generator seed")
+    <*> option auto (long "sweep-size" <> help "Sweep size")
+    <*> some pStep
+
+run :: MainSettings -> IO ()
+run settings = do
+  let n = settingsSideLength settings
+      lattice = Lattice (n, n) squareLatticeVectors
+      λ = settingsLambda settings
+      model = Model lattice λ
+      couplings = buildCouplings model
+      seed = settingsSeed settings
+      sweepSize = settingsSweepSize settings
+      steps = settingsAnnealingSteps settings
+      filename = pack $ printf "data/annealing_result_n=%d_λ=%f_seed=%d.h5" n λ seed
+      sample g = do
+        lift $ putStrLn "[*] Running Monte Carlo ..."
+        results <- anneal steps g
+        lift $ putStrLn "[*] Saving results ..."
+        lift $
+          H5.withFile filename H5.WriteTruncate $ \h -> do
+            H5.writeAttribute h "λ" (H5.Scalar λ)
+            H5.writeAttribute h "seed" (H5.Scalar seed)
+            H5.writeAttribute h "sweepSize" (H5.Scalar sweepSize)
+            case couplings of
+              (Couplings m) -> H5.createDataset h "couplings" m
+            forM_ (zip steps results) $ \((β, numberThermalization, _), (states, acceptance)) -> do
+              group <- H5.createGroup h (pack $ printf "%f" β)
+              case states of
+                (ConfigurationBatch _ m) -> H5.createDataset group "states" m
+              H5.writeAttribute group "acceptance" (H5.Scalar acceptance)
+              H5.writeAttribute group "thermalization" (H5.Scalar numberThermalization)
+              H5.writeAttribute group "β" (H5.Scalar β)
+  (g :: Xoshiro256PlusPlus (PrimState IO)) <- mkXoshiro256PlusPlus seed
+  _ <- runMetropolisT sample (SamplingOptions couplings Nothing) g
+
+  putStrLn "[*] Analyzing ..."
   H5.withFile filename H5.ReadOnly $ \h -> do
-    couplings <- fmap Couplings $ H5.readDataset =<< H5.open h "couplings"
     ListT.traverse_ pure $
       H5.forGroupM h $ \case
         g@H5.Group -> do
           (H5.Scalar (β :: ℝ)) <- H5.readAttribute g "β"
-          liftIO $ putStrLn (printf "[*] Processing results for β=%f ..." β)
+          liftIO $ putStrLn $ printf "[*] Processing results for β=%f ..." β
           states <- fmap (ConfigurationBatch (n * n)) $ H5.readDataset =<< H5.open g "states"
-          liftIO $ computeLocalObservables couplings states (pack $ printf "data/observables_n=%d_λ=%f_β=%f.csv" n λ β)
-          liftIO $ computeAutocorrFunction states (pack $ printf "data/autocorr_n=%d_λ=%f_β=%f.csv" n λ β)
+          let observablesFilename = pack $ printf "data/observables_n=%d_λ=%f_β=%f_seed=%d.csv" n λ β seed
+              autocorrFilename = pack $ printf "data/autocorr_n=%d_λ=%f_β=%f_seed=%d.csv" n λ β seed
+          liftIO $ computeLocalObservables couplings states observablesFilename
+          liftIO $ computeAutocorrFunction states autocorrFilename
         _ -> pure ()
+  pure ()
+
+-- experiment2 :: IO ()
+-- experiment2 = do
+--   let n = (25 :: Int)
+--       λ = (7.5 :: ℝ)
+--       filename = pack $ printf "data/annealing_result_n=%d_λ=%f.h5" n λ
+--   H5.withFile filename H5.ReadOnly $ \h -> do
+--     couplings <- fmap Couplings $ H5.readDataset =<< H5.open h "couplings"
+--     ListT.traverse_ pure $
+--       H5.forGroupM h $ \case
+--         g@H5.Group -> do
+--           (H5.Scalar (β :: ℝ)) <- H5.readAttribute g "β"
+--           liftIO $ putStrLn (printf "[*] Processing results for β=%f ..." β)
+--           states <- fmap (ConfigurationBatch (n * n)) $ H5.readDataset =<< H5.open g "states"
+--           liftIO $ computeLocalObservables couplings states (pack $ printf "data/observables_n=%d_λ=%f_β=%f.csv" n λ β)
+--           liftIO $ computeAutocorrFunction states (pack $ printf "data/autocorr_n=%d_λ=%f_β=%f.csv" n λ β)
+--         _ -> pure ()
 -- computeLocalObservables :: DenseMatrix S.Vector ℝ -> DenseMatrix S.Vector Word64 -> Text -> IO ()
 
 -- let β = (0.12 :: ℝ)
@@ -73,65 +146,72 @@ experiment2 = do
 --   G.forM_ autocorrFunction (hPutStrLn h . show)
 -- withFile ("autocorr50000_" <> show β <> ".dat") WriteMode $ \h ->
 --   G.forM_ autocorrFunction100 (hPutStrLn h . show)
-{-# SCC experiment2 #-}
+-- {-# SCC experiment2 #-}
 
-experiment1 :: IO ()
-experiment1 = do
-  let n = 25
-      lattice = Lattice (n, n) squareLatticeVectors
-      λ = 7.5
-      model = Model lattice λ
-      !couplings = buildCouplings model
-      options = SamplingOptions couplings Nothing
-      annealingSteps =
-        [ (0.10, 10000, 20000),
-          (0.2, 10000, 20000),
-          (0.4, 10000, 20000),
-          (0.8, 10000, 20000),
-          (1.6, 10000, 20000),
-          (3.2, 10000, 20000)
-        ]
-      filename = pack $ printf "data/annealing_result_n=%d_λ=%f.h5" n λ
-      sample g = do
-        lift $ putStrLn "[*] Running Monte Carlo ..."
-        results <- anneal annealingSteps g
-        -- _ <- thermalize β thermalizationSweeps sweepSize g
-        -- (states, acceptance) <- manySweeps β numberSweeps sweepSize g
-        lift $ putStrLn "[*] Saving results ..."
-        -- lift $ print acceptance
-        lift $
-          H5.withFile filename H5.WriteTruncate $ \h -> do
-            case couplings of
-              (Couplings m) -> H5.createDataset h "couplings" m
-            H5.open h "couplings" >>= \(d :: H5.Dataset) -> H5.writeAttribute d "λ" (H5.Scalar λ)
-            forM_ (zip annealingSteps results) $ \((β, numberThermalization, _), (states, acceptance)) -> do
-              group <- H5.createGroup h (pack $ printf "%f" β)
-              case states of
-                (ConfigurationBatch _ m) -> H5.createDataset group "states" m
-              H5.writeAttribute group "acceptance" (H5.Scalar acceptance)
-              H5.writeAttribute group "thermalization" (H5.Scalar numberThermalization)
-              H5.writeAttribute group "β" (H5.Scalar β)
-  -- H5.createDataset group "acceptance" (H5.Scalar acceptance)
-
-  -- forM_ rs $ \(MetropolisStats acceptance σ) ->
-  --   let e = computeEnergyPerSite couplings σ
-  --       m = computeMagnetizationPerSite σ
-  --    in lift . lift $ do
-  --         putStrLn $ show acceptance <> "\t" <> show e <> "\t" <> show m
-  --         saveForGnuplot lattice "picture.dat" σ
-  -- g = mkStdGen 42
-  (g :: Xoshiro256PlusPlus (PrimState IO)) <- mkXoshiro256PlusPlus 42
-  _ <- runMetropolisT sample options g
-  -- :: Xoshiro256PlusPlus (PrimState IO) -> IO ()) g
-  -- _ <- runStateGenT g (runMetropolisT (sample β) options)
-  pure ()
-{-# SCC experiment1 #-}
+-- experiment1 :: IO ()
+-- experiment1 = do
+--   let n = 25
+--       lattice = Lattice (n, n) squareLatticeVectors
+--       λ = 7.5
+--       model = Model lattice λ
+--       !couplings = buildCouplings model
+--       options = SamplingOptions couplings Nothing
+--       annealingSteps =
+--         [ (0.10, 10000, 20000),
+--           (0.2, 10000, 20000),
+--           (0.4, 10000, 20000),
+--           (0.8, 10000, 20000),
+--           (1.6, 10000, 20000),
+--           (3.2, 10000, 20000)
+--         ]
+--       filename = pack $ printf "data/annealing_result_n=%d_λ=%f.h5" n λ
+--       sample g = do
+--         lift $ putStrLn "[*] Running Monte Carlo ..."
+--         results <- anneal annealingSteps g
+--         -- _ <- thermalize β thermalizationSweeps sweepSize g
+--         -- (states, acceptance) <- manySweeps β numberSweeps sweepSize g
+--         lift $ putStrLn "[*] Saving results ..."
+--         -- lift $ print acceptance
+--         lift $
+--           H5.withFile filename H5.WriteTruncate $ \h -> do
+--             case couplings of
+--               (Couplings m) -> H5.createDataset h "couplings" m
+--             H5.open h "couplings" >>= \(d :: H5.Dataset) -> H5.writeAttribute d "λ" (H5.Scalar λ)
+--             forM_ (zip annealingSteps results) $ \((β, numberThermalization, _), (states, acceptance)) -> do
+--               group <- H5.createGroup h (pack $ printf "%f" β)
+--               case states of
+--                 (ConfigurationBatch _ m) -> H5.createDataset group "states" m
+--               H5.writeAttribute group "acceptance" (H5.Scalar acceptance)
+--               H5.writeAttribute group "thermalization" (H5.Scalar numberThermalization)
+--               H5.writeAttribute group "β" (H5.Scalar β)
+--   -- H5.createDataset group "acceptance" (H5.Scalar acceptance)
+--
+--   -- forM_ rs $ \(MetropolisStats acceptance σ) ->
+--   --   let e = computeEnergyPerSite couplings σ
+--   --       m = computeMagnetizationPerSite σ
+--   --    in lift . lift $ do
+--   --         putStrLn $ show acceptance <> "\t" <> show e <> "\t" <> show m
+--   --         saveForGnuplot lattice "picture.dat" σ
+--   -- g = mkStdGen 42
+--   (g :: Xoshiro256PlusPlus (PrimState IO)) <- mkXoshiro256PlusPlus 42
+--   _ <- runMetropolisT sample options g
+--   -- :: Xoshiro256PlusPlus (PrimState IO) -> IO ()) g
+--   -- _ <- runStateGenT g (runMetropolisT (sample β) options)
+--   pure ()
+-- {-# SCC experiment1 #-}
 
 main :: IO ()
-main = do
-  -- couplingsRenormalization
-  experiment1
-  experiment2
+main = run =<< execParser opts
+  where
+    opts = info (pMainSettings <**> helper) fullDesc
+
+--       ( fullDesc
+--      <> progDesc "Print a greeting for TARGET"
+--      <> header "hello - a test for optparse-applicative" )
+
+-- couplingsRenormalization
+-- experiment1
+-- experiment2
 
 -- let lattice = Lattice (5, 5) squareLatticeVectors
 --     model = Model lattice 3
