@@ -180,11 +180,12 @@ thermalize β numberSweeps sweepSize g = snd <$> manySweeps β 1 (numberSweeps *
 
 anneal ::
   (PrimMonad m, StatefulGen g m) =>
+  Int ->
   [(ℝ, Int, Int)] ->
   g ->
   MetropolisT m [(ConfigurationBatch, ℝ)]
-anneal steps g = do
-  (Couplings (DenseMatrix sweepSize _ _)) <- asks msCoupling
+anneal sweepSize steps g = do
+  -- (Couplings (DenseMatrix sweepSize _ _)) <- asks msCoupling
   forM steps $ \(β, numberThermalization, numberGathering) -> do
     _ <- thermalize β numberThermalization sweepSize g
     manySweeps β numberGathering sweepSize g

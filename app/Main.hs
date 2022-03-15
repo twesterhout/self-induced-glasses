@@ -73,7 +73,7 @@ run settings = do
       filename = pack $ printf "data/annealing_result_n=%d_λ=%f_seed=%d.h5" n λ seed
       sample g = do
         lift $ putStrLn "[*] Running Monte Carlo ..."
-        results <- anneal steps g
+        results <- anneal sweepSize steps g
         lift $ putStrLn "[*] Saving results ..."
         lift $
           H5.withFile filename H5.WriteTruncate $ \h -> do
