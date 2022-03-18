@@ -101,9 +101,12 @@ run settings = do
           liftIO $ putStrLn $ printf "[*] Processing results for β=%f ..." β
           states <- fmap (ConfigurationBatch (n * n)) $ H5.readDataset =<< H5.open g "states"
           let observablesFilename = pack $ printf "data/observables_n=%d_λ=%f_β=%f_seed=%d.csv" n λ β seed
-              autocorrFilename = pack $ printf "data/autocorr_n=%d_λ=%f_β=%f_seed=%d.csv" n λ β seed
+              autocorrFilename t_w = pack $ printf "data/autocorr_n=%d_λ=%f_β=%f_t=%f_seed=%d.csv" n λ β seed t_w
           liftIO $ computeLocalObservables couplings states observablesFilename
-          liftIO $ computeAutocorrFunction states autocorrFilename
+          -- liftIO $ computeAutocorrFunction states autocorrFilename
+          liftIO $
+            forM_ [32, 128, 512, 2048, 8192, 32768, 131072] $ \t_w ->
+              computeTwoPointAutocorrFunction t_w states (autocorrFilename t_w)
         _ -> pure ()
   pure ()
 

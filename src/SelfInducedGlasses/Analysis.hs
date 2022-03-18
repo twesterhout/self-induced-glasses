@@ -7,6 +7,7 @@ module SelfInducedGlasses.Analysis where
 import Control.Monad (forM_, unless)
 -- import Control.Monad.ST (runST)
 import Control.Scheduler
+import Data.Coerce
 import Data.Bits
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.HDF5 as H5
@@ -37,26 +38,26 @@ loadStates :: Text -> IO (DenseMatrix S.Vector Word64)
 loadStates filename = H5.withFile filename H5.ReadOnly $ \f ->
   H5.open f "states" >>= H5.readDataset
 
-wordOverlap :: Int -> Word64 -> Word64 -> Int
-wordOverlap n a b = 64 - 2 * k
-  where
-    mask = complement 0 `shiftR` (64 - n)
-    k = popCount $
-      case compare n 64 of
-        LT -> (a `xor` b) .&. mask
-        EQ -> a `xor` b
-        _ -> error "this should never happen"
-{-# INLINE wordOverlap #-}
+-- wordOverlap :: Int -> Word64 -> Word64 -> Int
+-- wordOverlap n a b = 64 - 2 * k
+--   where
+--     mask = complement 0 `shiftR` (64 - n)
+--     k = popCount $
+--       case compare n 64 of
+--         LT -> (a `xor` b) .&. mask
+--         EQ -> a `xor` b
+--         _ -> error "this should never happen"
+-- {-# INLINE wordOverlap #-}
 
-computeOverlap :: Vector v Word64 => Int -> v Word64 -> v Word64 -> ℝ
-computeOverlap n a b = fromIntegral (go 0 0) / fromIntegral n
-  where
-    (!blocks, !rest) = n `divMod` 64
-    go !acc !i
-      | i < blocks = go (acc + wordOverlap 64 (G.unsafeIndex a i) (G.unsafeIndex b i)) (i + 1)
-      | rest /= 0 = acc + wordOverlap rest (G.unsafeIndex a i) (G.unsafeIndex b i)
-      | otherwise = acc
-{-# INLINE computeOverlap #-}
+-- computeOverlap :: Vector v Word64 => Int -> v Word64 -> v Word64 -> ℝ
+-- computeOverlap n a b = fromIntegral (go 0 0) / fromIntegral n
+--   where
+--     (!blocks, !rest) = n `divMod` 64
+--     go !acc !i
+--       | i < blocks = go (acc + wordOverlap 64 (G.unsafeIndex a i) (G.unsafeIndex b i)) (i + 1)
+--       | rest /= 0 = acc + wordOverlap rest (G.unsafeIndex a i) (G.unsafeIndex b i)
+--       | otherwise = acc
+-- {-# INLINE computeOverlap #-}
 
 -- autocorr :: (HasCallStack, Vector v Word64, Vector v ℝ) => Int -> Int -> DenseMatrix v Word64 -> v ℝ
 -- autocorr offset numberBits states = G.fromList $ fmap (computeOverlap numberBits s₀) states'
@@ -116,6 +117,43 @@ computeAutocorrFunction states filename = do
               autocorrStates states
   withFile (unpack filename) WriteMode $ \h ->
     Builder.hPutBuilder h table
+
+twoPointAutocorrFunction :: Int -> ConfigurationBatch -> S.Vector ℝ
+twoPointAutocorrFunction t_w states@(ConfigurationBatch numberBits (DenseMatrix n _ _))
+  | t_w < n = System.IO.Unsafe.unsafePerformIO $ do
+    let size = n - t_w
+    buffer <- G.unsafeThaw (G.replicate size 0)
+    let process i =
+          let !σ = G.drop t_w $ extractSingleSpinEvolution states i
+              !σ₀ = coerce (G.unsafeHead σ) :: CFloat
+           in S.unsafeWith σ $ \(xPtr :: Ptr Float) ->
+                SM.unsafeWith buffer $ \(yPtr :: Ptr Float) ->
+                  contiguous_axpy size (σ₀ / fromIntegral numberBits) (castPtr xPtr) (castPtr yPtr)
+    forM_ [0 .. numberBits - 1] process
+    G.unsafeFreeze buffer
+
+computeTwoPointAutocorrFunction :: Int -> ConfigurationBatch -> Text -> IO ()
+computeTwoPointAutocorrFunction t_w states filename = do
+  let table =
+        mconcat $
+          fmap (\f -> Builder.floatDec f <> Builder.charUtf8 '\n') $
+            G.toList $
+              twoPointAutocorrFunction t_w states
+  withFile (unpack filename) WriteMode $ \h ->
+    Builder.hPutBuilder h table
+-- autocorrStates :: ConfigurationBatch -> S.Vector ℝ
+-- autocorrStates states@(ConfigurationBatch numberBits (DenseMatrix n _ _)) =
+--   System.IO.Unsafe.unsafePerformIO $ do
+--     let process = pure . autocorr . extractSingleSpinEvolution states
+--     putStrLn "[*] Running process ... "
+--     autocorrs <- traverseConcurrently Seq process [0 .. numberBits - 1]
+--     putStrLn "[*] Reducing ..."
+--     buffer <- G.unsafeThaw (G.replicate n 0)
+--     forM_ autocorrs $ \x ->
+--       S.unsafeWith x $ \(xPtr :: Ptr Float) ->
+--         SM.unsafeWith buffer $ \(yPtr :: Ptr Float) ->
+--           contiguous_axpy n (1 / fromIntegral numberBits) (castPtr xPtr) (castPtr yPtr)
+--     G.unsafeFreeze buffer
 
 -- -- autocorrFunction100 = autocorr 50000 n states
 -- -- withFile ("energy_" <> show β <> ".dat") WriteMode $ \h ->
