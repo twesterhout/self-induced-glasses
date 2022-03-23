@@ -73,6 +73,7 @@ library
                      , containers
                      , bytestring
                      , random >= 1.2
+                     , mwc-random
                      , primitive
                      , ghc-prim
                      , mtl

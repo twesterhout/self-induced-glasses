@@ -7,9 +7,11 @@ module SelfInducedGlasses.Interaction
     effectiveInteractionDebug,
     dumpCouplingEvolutionToFile,
     buildCouplings,
+    buildSKModel,
   )
 where
 
+import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.ST
 import Control.Scheduler
 import qualified Data.ByteString.Builder as Builder
@@ -24,6 +26,8 @@ import qualified Data.Vector.Storable as S
 import SelfInducedGlasses.Core
 import System.IO (IOMode (..), withFile)
 import qualified System.IO.Unsafe
+import qualified System.Random.MWC.Distributions as Distributions
+import System.Random.Stateful
 
 -- | Point on a 2-dimensional lattice
 data Point a = P !a !a
@@ -215,3 +219,22 @@ buildCouplings model = Couplings $ buildInteractionMatrix model rₘₐₓ
   where
     rₘₐₓ = 1000
 {-# SCC buildCouplings #-}
+
+buildSKModel :: (PrimMonad m, StatefulGen g m) => Int -> g -> m Couplings
+buildSKModel n g = do
+  v <- GM.new (n * n)
+  let f !i !j
+        | i <= j = realToFrac <$> Distributions.normal 0 1 g
+        | otherwise = error "nope, use symmetry"
+      go2 !i !j
+        | j < n = do
+          z <- f i j
+          GM.write v (i * n + j) z
+          GM.write v (j * n + i) z
+          go2 i (j + 1)
+        | otherwise = pure ()
+      go1 !i
+        | i < n = go2 i (i + 1) >> go1 (i + 1)
+        | otherwise = pure ()
+  go1 0
+  Couplings <$> DenseMatrix n n <$> G.unsafeFreeze v

@@ -5,6 +5,7 @@ module SelfInducedGlasses.Analysis where
 
 -- import Control.DeepSeq (force)
 import Control.Monad (forM_, unless)
+import Control.Monad.Primitive (RealWorld)
 -- import Control.Monad.ST (runST)
 import Control.Scheduler
 import Data.Coerce
@@ -16,7 +17,7 @@ import Data.Text (Text, unpack)
 -- import qualified Data.Vector as B
 import Data.Vector.Generic (Vector)
 import qualified Data.Vector.Generic as G
--- import qualified Data.Vector.Generic.Mutable as GM
+import qualified Data.Vector.Generic.Mutable as GM
 import qualified Data.Vector.Storable as S
 import qualified Data.Vector.Storable.Mutable as SM
 import qualified Data.Vector.Unboxed as U
@@ -246,6 +247,13 @@ extractSingleSpinEvolution (ConfigurationBatch _ (DenseMatrix n numberWords v)) 
 foreign import capi unsafe "helpers.h contiguous_axpy"
   contiguous_axpy :: Int -> CFloat -> Ptr CFloat -> Ptr CFloat -> IO ()
 
+axpy :: ℝ -> S.Vector ℝ -> S.MVector RealWorld ℝ -> IO ()
+axpy α x y
+  | G.length x == GM.length y =
+      S.unsafeWith x $ \(xPtr :: Ptr Float) ->
+        SM.unsafeWith y $ \(yPtr :: Ptr Float) ->
+          contiguous_axpy (G.length x) (coerce α) (castPtr xPtr) (castPtr yPtr)
+
 autocorrStates :: ConfigurationBatch -> S.Vector ℝ
 autocorrStates states@(ConfigurationBatch numberBits (DenseMatrix n _ _)) =
   System.IO.Unsafe.unsafePerformIO $ do
@@ -267,6 +275,15 @@ autocorrStates states@(ConfigurationBatch numberBits (DenseMatrix n _ _)) =
 --       xs@(x : _) -> (x, xs)
 --       _ -> error "too few states"
 -- {-# SCC autocorr #-}
+
+vectorMean :: [S.Vector ℝ] -> S.Vector ℝ
+vectorMean vs@(v:_) = System.IO.Unsafe.unsafePerformIO $ do
+  out <- GM.new (G.length v)
+  let scale = 1 / fromIntegral (length vs)
+  forM_ vs $ \x ->
+    axpy scale x out
+  G.unsafeFreeze out
+
 
 -- data AnalysisOptions = AnalysisOptions
 --   {

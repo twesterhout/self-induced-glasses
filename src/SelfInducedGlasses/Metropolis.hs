@@ -22,6 +22,7 @@ import Data.Word
 import Foreign.ForeignPtr (withForeignPtr)
 -- import Foreign.Storable (Storable)
 import SelfInducedGlasses.Core
+import SelfInducedGlasses.Random
 import System.Random.Stateful
 
 data SamplingOptions = SamplingOptions
@@ -189,3 +190,17 @@ anneal sweepSize steps g = do
   forM steps $ \(β, numberThermalization, numberGathering) -> do
     _ <- thermalize β numberThermalization sweepSize g
     manySweeps β numberGathering sweepSize g
+
+annealIO ::
+  Int ->
+  Couplings ->
+  [(ℝ, Int, Int)] ->
+  Int ->
+  IO [(ConfigurationBatch, ℝ)]
+annealIO sweepSize couplings steps seed = do
+  let run g =
+        forM steps $ \(β, numberThermalization, numberGathering) -> do
+          _ <- thermalize β numberThermalization sweepSize g
+          manySweeps β numberGathering sweepSize g
+  (g :: Xoshiro256PlusPlus (PrimState IO)) <- mkXoshiro256PlusPlus seed
+  runMetropolisT run (SamplingOptions couplings Nothing) g
