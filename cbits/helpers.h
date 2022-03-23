@@ -22,3 +22,6 @@ void extract_evolution(HsInt batch_size, HsInt number_words,
                        uint64_t const *input, HsInt i, float *out);
 
 void contiguous_axpy(HsInt n, float a, float const *x, float *y);
+
+void two_point_autocorr_function(HsInt n, HsInt offset, uint64_t const *bits,
+                                 HsInt number_bits, float *out);

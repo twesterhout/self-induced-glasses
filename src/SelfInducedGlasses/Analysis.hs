@@ -118,19 +118,31 @@ computeAutocorrFunction states filename = do
   withFile (unpack filename) WriteMode $ \h ->
     Builder.hPutBuilder h table
 
+foreign import capi unsafe "two_point_autocorr_function"
+  two_point_autocorr_function :: Int -> Int -> Ptr Word64 -> Int -> Ptr CFloat -> IO ()
+
 twoPointAutocorrFunction :: Int -> ConfigurationBatch -> S.Vector ℝ
-twoPointAutocorrFunction t_w states@(ConfigurationBatch numberBits (DenseMatrix n _ _))
+twoPointAutocorrFunction t_w states@(ConfigurationBatch numberBits (DenseMatrix n _ bits))
   | t_w < n = System.IO.Unsafe.unsafePerformIO $ do
     let size = n - t_w
     buffer <- G.unsafeThaw (G.replicate size 0)
-    let process i =
-          let !σ = G.drop t_w $ extractSingleSpinEvolution states i
-              !σ₀ = coerce (G.unsafeHead σ) :: CFloat
-           in S.unsafeWith σ $ \(xPtr :: Ptr Float) ->
-                SM.unsafeWith buffer $ \(yPtr :: Ptr Float) ->
-                  contiguous_axpy size (σ₀ / fromIntegral numberBits) (castPtr xPtr) (castPtr yPtr)
-    forM_ [0 .. numberBits - 1] process
+    S.unsafeWith bits $ \(bitsPtr :: Ptr Word64) ->
+      SM.unsafeWith buffer $ \(outPtr :: Ptr Float) ->
+        two_point_autocorr_function n t_w bitsPtr numberBits (castPtr outPtr)
     G.unsafeFreeze buffer
+-- twoPointAutocorrFunction :: Int -> ConfigurationBatch -> S.Vector ℝ
+-- twoPointAutocorrFunction t_w states@(ConfigurationBatch numberBits (DenseMatrix n _ _))
+--   | t_w < n = System.IO.Unsafe.unsafePerformIO $ do
+--     let size = n - t_w
+--     buffer <- G.unsafeThaw (G.replicate size 0)
+--     let process i =
+--           let !σ = G.drop t_w $ extractSingleSpinEvolution states i
+--               !σ₀ = coerce (G.unsafeHead σ) :: CFloat
+--            in S.unsafeWith σ $ \(xPtr :: Ptr Float) ->
+--                 SM.unsafeWith buffer $ \(yPtr :: Ptr Float) ->
+--                   contiguous_axpy size (σ₀ / fromIntegral numberBits) (castPtr xPtr) (castPtr yPtr)
+--     forM_ [0 .. numberBits - 1] process
+--     G.unsafeFreeze buffer
 
 computeTwoPointAutocorrFunction :: Int -> ConfigurationBatch -> Text -> IO ()
 computeTwoPointAutocorrFunction t_w states filename = do

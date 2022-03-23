@@ -256,3 +256,33 @@ cleanup:
   }
   return status;
 }
+
+static float compute_bits_overlap(ptrdiff_t const number_bits,
+                                  uint64_t const *const restrict a,
+                                  uint64_t const *const restrict b) {
+  ptrdiff_t const num_blocks = number_bits / 64;
+  ptrdiff_t const rest = number_bits - 64 * num_blocks;
+  ptrdiff_t acc = 0;
+  for (ptrdiff_t block_idx = 0; block_idx < num_blocks; ++block_idx) {
+    uint64_t const word_a = a[block_idx];
+    uint64_t const word_b = b[block_idx];
+    acc += 64 - 2 * __builtin_popcountl(word_a ^ word_b);
+  }
+  if (rest != 0) {
+    uint64_t const word_a = a[num_blocks];
+    uint64_t const word_b = b[num_blocks];
+    uint64_t const mask = (~(uint64_t)0) >> (64 - rest);
+    acc += rest - 2 * __builtin_popcountl((word_a ^ word_b) & mask);
+  }
+  return (double)acc / (double)number_bits;
+}
+
+void two_point_autocorr_function(HsInt const n, HsInt const offset,
+                                 uint64_t const *bits, HsInt const number_bits,
+                                 float *out) {
+  HsInt const number_words = (number_bits + 63) / 64;
+  uint64_t const *a = bits + offset * number_words;
+  for (ptrdiff_t i = 0; i < (n - offset); ++i) {
+    out[i] = compute_bits_overlap(number_bits, a, a + i * number_words);
+  }
+}
