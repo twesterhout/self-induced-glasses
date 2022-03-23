@@ -5,6 +5,7 @@ module Main (main) where
 
 import Control.Monad
 import Control.Monad.Primitive
+import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict
 import Control.Monad.Trans
 import qualified Data.HDF5 as H5
@@ -65,8 +66,8 @@ run settings = do
   let n = settingsSideLength settings
       lattice = Lattice (n, n) squareLatticeVectors
       λ = settingsLambda settings
-      model = Model lattice λ
-      couplings = buildCouplings model
+      -- model = Model lattice λ
+      -- couplings = buildCouplings model
       seed = settingsSeed settings
       sweepSize = settingsSweepSize settings
       steps = settingsAnnealingSteps settings
@@ -75,6 +76,7 @@ run settings = do
         lift $ putStrLn "[*] Running Monte Carlo ..."
         results <- anneal sweepSize steps g
         lift $ putStrLn "[*] Saving results ..."
+        couplings <- asks msCoupling
         lift $
           H5.withFile filename H5.WriteTruncate $ \h -> do
             H5.writeAttribute h "λ" (H5.Scalar λ)
@@ -90,6 +92,7 @@ run settings = do
               H5.writeAttribute group "thermalization" (H5.Scalar numberThermalization)
               H5.writeAttribute group "β" (H5.Scalar β)
   (g :: Xoshiro256PlusPlus (PrimState IO)) <- mkXoshiro256PlusPlus seed
+  couplings <- buildSKModel n g
   _ <- runMetropolisT sample (SamplingOptions couplings Nothing) g
 
   putStrLn "[*] Analyzing ..."
@@ -101,11 +104,11 @@ run settings = do
           liftIO $ putStrLn $ printf "[*] Processing results for β=%f ..." β
           states <- fmap (ConfigurationBatch (n * n)) $ H5.readDataset =<< H5.open g "states"
           let observablesFilename = pack $ printf "data/observables_n=%d_λ=%f_β=%f_seed=%d.csv" n λ β seed
-              autocorrFilename t_w = pack $ printf "data/autocorr_n=%d_λ=%f_β=%f_t=%d_seed=%d.csv" n λ β seed t_w
+              autocorrFilename t_w = pack $ printf "data/autocorr_n=%d_λ=%f_β=%f_t=%d_seed=%d.csv" n λ β t_w seed
           liftIO $ computeLocalObservables couplings states observablesFilename
           -- liftIO $ computeAutocorrFunction states autocorrFilename
           liftIO $
-            forM_ [32, 128, 512, 2048, 8192, 32768, 131072] $ \t_w ->
+            forM_ [32, 128, 512, 2048, 8192] $ \t_w ->
               computeTwoPointAutocorrFunction t_w states (autocorrFilename t_w)
         _ -> pure ()
   pure ()
