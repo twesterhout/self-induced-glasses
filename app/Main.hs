@@ -152,7 +152,7 @@ analyzeDynamics settings = do
 
   forM_ (zip steps results) $ \((β, _, _), (states, acceptance)) -> do
     putStrLn $ printf "β=%f, acceptance=%f" β acceptance
-    let autocorrFilename t_w = pack $ printf "data/autocorr_n=%d_β=%f_t=%d_seed=%d.csv" n β t_w seed
+    let autocorrFilename t_w = pack $ printf "data/autocorr_n=%d_β=%f_t=%d_seed=%d.h5" n β t_w seed
     forM_ [32, 128, 512, 2048, 8192] $ \t_w ->
       computeTwoPointAutocorrFunction t_w states (autocorrFilename t_w)
 
