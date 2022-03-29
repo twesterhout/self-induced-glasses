@@ -64,7 +64,7 @@ pMainSettings =
 run :: MainSettings -> IO ()
 run settings = do
   let n = settingsSideLength settings
-      lattice = Lattice (n, n) squareLatticeVectors
+      -- lattice = Lattice (n, n) squareLatticeVectors
       λ = settingsLambda settings
       -- model = Model lattice λ
       -- couplings = buildCouplings model
@@ -92,7 +92,7 @@ run settings = do
               H5.writeAttribute group "thermalization" (H5.Scalar numberThermalization)
               H5.writeAttribute group "β" (H5.Scalar β)
   (g :: Xoshiro256PlusPlus (PrimState IO)) <- mkXoshiro256PlusPlus seed
-  couplings <- buildSKModel n g
+  couplings@(Couplings (DenseMatrix numberSpins _ _)) <- buildSKModel n g
   _ <- runMetropolisT sample (SamplingOptions couplings Nothing) g
 
   putStrLn "[*] Analyzing ..."
@@ -102,16 +102,78 @@ run settings = do
         g@H5.Group -> do
           (H5.Scalar (β :: ℝ)) <- H5.readAttribute g "β"
           liftIO $ putStrLn $ printf "[*] Processing results for β=%f ..." β
-          states <- fmap (ConfigurationBatch (n * n)) $ H5.readDataset =<< H5.open g "states"
+          states <- fmap (ConfigurationBatch numberSpins) $ H5.readDataset =<< H5.open g "states"
           let observablesFilename = pack $ printf "data/observables_n=%d_λ=%f_β=%f_seed=%d.csv" n λ β seed
               autocorrFilename t_w = pack $ printf "data/autocorr_n=%d_λ=%f_β=%f_t=%d_seed=%d.csv" n λ β t_w seed
           liftIO $ computeLocalObservables couplings states observablesFilename
+          liftIO $ putStrLn "[*] Computing autocorr ..."
           -- liftIO $ computeAutocorrFunction states autocorrFilename
           liftIO $
             forM_ [32, 128, 512, 2048, 8192] $ \t_w ->
               computeTwoPointAutocorrFunction t_w states (autocorrFilename t_w)
         _ -> pure ()
   pure ()
+
+analyzeDynamics :: MainSettings -> IO ()
+analyzeDynamics settings = do
+  let n = settingsSideLength settings
+      -- lattice = Lattice (n, n) squareLatticeVectors
+      -- λ = settingsLambda settings
+      -- model = Model lattice λ
+      -- couplings = buildCouplings model
+      seed = settingsSeed settings
+      sweepSize = settingsSweepSize settings
+      steps = settingsAnnealingSteps settings
+      -- filename = pack $ printf "data/annealing_result_n=%d_λ=%f_seed=%d.h5" n λ seed
+      sample g = do
+        lift $ putStrLn "[*] Running Monte Carlo ..."
+        anneal sweepSize steps g
+  -- lift $ putStrLn "[*] Saving results ..."
+  -- couplings <- asks msCoupling
+  -- lift $
+  --   H5.withFile filename H5.WriteTruncate $ \h -> do
+  --     H5.writeAttribute h "λ" (H5.Scalar λ)
+  --     H5.writeAttribute h "seed" (H5.Scalar seed)
+  --     H5.writeAttribute h "sweepSize" (H5.Scalar sweepSize)
+  --     case couplings of
+  --       (Couplings m) -> H5.createDataset h "couplings" m
+  --     forM_ (zip steps results) $ \((β, numberThermalization, _), (states, acceptance)) -> do
+  --       group <- H5.createGroup h (pack $ printf "%f" β)
+  --       case states of
+  --         (ConfigurationBatch _ m) -> H5.createDataset group "states" m
+  --       H5.writeAttribute group "acceptance" (H5.Scalar acceptance)
+  --       H5.writeAttribute group "thermalization" (H5.Scalar numberThermalization)
+  --       H5.writeAttribute group "β" (H5.Scalar β)
+  (g :: Xoshiro256PlusPlus (PrimState IO)) <- mkXoshiro256PlusPlus 673489534
+  couplings@(Couplings (DenseMatrix numberSpins _ _)) <- buildSKModel n g
+  results <- annealIO sweepSize couplings steps seed
+  -- runMetropolisT sample (SamplingOptions couplings Nothing) g
+  -- annealIO sweepSize couplings steps seed = do
+
+  forM_ (zip steps results) $ \((β, _, _), (states, acceptance)) -> do
+    putStrLn $ printf "β=%f, acceptance=%f" β acceptance
+    let autocorrFilename t_w = pack $ printf "data/autocorr_n=%d_β=%f_t=%d_seed=%d.csv" n β t_w seed
+    forM_ [32, 128, 512, 2048, 8192] $ \t_w ->
+      computeTwoPointAutocorrFunction t_w states (autocorrFilename t_w)
+
+-- putStrLn "[*] Analyzing ..."
+-- H5.withFile filename H5.ReadOnly $ \h -> do
+--   ListT.traverse_ pure $
+--     H5.forGroupM h $ \case
+--       g@H5.Group -> do
+--         (H5.Scalar (β :: ℝ)) <- H5.readAttribute g "β"
+--         liftIO $ putStrLn $ printf "[*] Processing results for β=%f ..." β
+--         states <- fmap (ConfigurationBatch numberSpins) $ H5.readDataset =<< H5.open g "states"
+--         let observablesFilename = pack $ printf "data/observables_n=%d_λ=%f_β=%f_seed=%d.csv" n λ β seed
+--             autocorrFilename t_w = pack $ printf "data/autocorr_n=%d_λ=%f_β=%f_t=%d_seed=%d.csv" n λ β t_w seed
+--         liftIO $ computeLocalObservables couplings states observablesFilename
+--         liftIO $ putStrLn "[*] Computing autocorr ..."
+--         -- liftIO $ computeAutocorrFunction states autocorrFilename
+--         liftIO $
+--           forM_ [32, 128, 512, 2048, 8192] $ \t_w ->
+--             computeTwoPointAutocorrFunction t_w states (autocorrFilename t_w)
+--       _ -> pure ()
+-- pure ()
 
 -- experiment2 :: IO ()
 -- experiment2 = do
@@ -207,7 +269,7 @@ run settings = do
 -- {-# SCC experiment1 #-}
 
 main :: IO ()
-main = run =<< execParser opts
+main = analyzeDynamics =<< execParser opts
   where
     opts = info (pMainSettings <**> helper) fullDesc
 

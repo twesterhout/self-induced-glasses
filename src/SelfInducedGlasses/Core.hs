@@ -101,11 +101,14 @@ foreign import capi unsafe "helpers.h total_energy"
   total_energy :: CPtrdiff -> Ptr CFloat -> Ptr Word64 -> IO CFloat
 
 totalEnergy :: Couplings -> Configuration -> ℝ
-totalEnergy (Couplings (DenseMatrix _ _ v)) (Configuration n x) =
-  (coerce :: CFloat -> Float) . System.IO.Unsafe.unsafePerformIO $
-    S.unsafeWith v $ \(couplingsPtr :: Ptr Float) ->
-      S.unsafeWith x $ \xPtr ->
-        total_energy (fromIntegral n) (castPtr couplingsPtr) xPtr
+totalEnergy (Couplings (DenseMatrix n' n'' v)) (Configuration n x)
+  | n' == n'' && n' == n =
+    (coerce :: CFloat -> Float) . System.IO.Unsafe.unsafePerformIO $
+      -- putStrLn $ "totalEnergy: n = " <> show n
+      S.unsafeWith v $ \(couplingsPtr :: Ptr Float) ->
+        S.unsafeWith x $ \xPtr ->
+          total_energy (fromIntegral n) (castPtr couplingsPtr) xPtr
+  | otherwise = error $ show (n', n'', n)
 {-# SCC totalEnergy #-}
 
 foreign import ccall unsafe "helpers.h energy_change_upon_flip"

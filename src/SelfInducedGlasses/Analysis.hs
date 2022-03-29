@@ -87,7 +87,7 @@ localObservables :: Couplings -> ConfigurationBatch -> U.Vector (ℝ, ℝ)
 localObservables couplings states =
   System.IO.Unsafe.unsafePerformIO $ do
     putStrLn "[*] Computing local observables ..."
-    !r <- G.concat <$> traverseConcurrently Par process chunks
+    !r <- G.concat <$> traverseConcurrently Seq process chunks
     putStrLn "[+] Done!"
     pure r
   where
@@ -123,8 +123,11 @@ foreign import capi unsafe "two_point_autocorr_function"
   two_point_autocorr_function :: Int -> Int -> Ptr Word64 -> Int -> Ptr CFloat -> IO ()
 
 twoPointAutocorrFunction :: Int -> ConfigurationBatch -> S.Vector ℝ
-twoPointAutocorrFunction t_w states@(ConfigurationBatch numberBits (DenseMatrix n _ bits))
+twoPointAutocorrFunction t_w states@(ConfigurationBatch numberBits (DenseMatrix n numberWords bits))
   | t_w < n = System.IO.Unsafe.unsafePerformIO $ do
+    -- putStrLn $ "numberBits = " <> show numberBits
+    -- putStrLn $ "n = " <> show n
+    -- putStrLn $ "numberWords = " <> show numberWords
     let size = n - t_w
     buffer <- G.unsafeThaw (G.replicate size 0)
     S.unsafeWith bits $ \(bitsPtr :: Ptr Word64) ->

@@ -56,6 +56,7 @@ packed_dot_product_scalar(ptrdiff_t const n, float const *const restrict a,
 static inline float packed_dot_product(ptrdiff_t const n,
                                        float const *const restrict a,
                                        uint64_t const *const restrict b) {
+  // fprintf(stderr, "%s", "packed_dot_product...");
   simde__m256 sum_v = simde_mm256_setzero_ps();
 #if USE_KAHAN
   simde__m256 err_v = simde_mm256_setzero_ps();
@@ -103,6 +104,7 @@ static inline float packed_dot_product(ptrdiff_t const n,
     abort();
   }
 #endif
+  // fprintf(stderr, "%s\n", " done!");
   return acc;
 }
 
@@ -117,15 +119,18 @@ float energy_change_upon_flip(ptrdiff_t const n,
 
 float total_energy(ptrdiff_t const n, float const *const restrict couplings,
                    uint64_t const *const restrict x) {
+  // fprintf(stderr, "%s", "total_energy...");
   float e = 0.0f;
   for (ptrdiff_t k = 0; k < n; ++k) {
     const float t = packed_dot_product(n, couplings + k * n, x);
     e += read_spin(x, k) * t;
   }
+  // fprintf(stderr, "%s\n", " done!");
   return -e;
 }
 
 ptrdiff_t hamming_weight(ptrdiff_t const n, uint64_t const *const restrict x) {
+  // fprintf(stderr, "%s", "hamming_weight...");
   ptrdiff_t m = 0;
   ptrdiff_t const number_words = n / 64;
   ptrdiff_t const rest = n % 64;
@@ -137,6 +142,7 @@ ptrdiff_t hamming_weight(ptrdiff_t const n, uint64_t const *const restrict x) {
     uint64_t const t = x[number_words];
     m += __builtin_popcountl(t & mask);
   }
+  // fprintf(stderr, "%s\n", " done!");
   return m;
 }
 
