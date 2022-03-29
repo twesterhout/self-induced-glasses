@@ -150,13 +150,15 @@ twoPointAutocorrFunction t_w states@(ConfigurationBatch numberBits (DenseMatrix 
 
 computeTwoPointAutocorrFunction :: Int -> ConfigurationBatch -> Text -> IO ()
 computeTwoPointAutocorrFunction t_w states filename = do
-  let table =
-        mconcat $
-          fmap (\f -> Builder.floatDec f <> Builder.charUtf8 '\n') $
-            G.toList $
-              twoPointAutocorrFunction t_w states
-  withFile (unpack filename) WriteMode $ \h ->
-    Builder.hPutBuilder h table
+  -- let table =
+  --       mconcat $
+  --         fmap (\f -> Builder.floatDec f <> Builder.charUtf8 '\n') $
+  --           G.toList $
+  --             twoPointAutocorrFunction t_w states
+  -- withFile (unpack filename) WriteMode $ \h ->
+  --   Builder.hPutBuilder h table
+  H5.withFile filename H5.WriteTruncate $ \h ->
+    H5.createDataset h "autocorr" (twoPointAutocorrFunction t_w states)
 -- autocorrStates :: ConfigurationBatch -> S.Vector ℝ
 -- autocorrStates states@(ConfigurationBatch numberBits (DenseMatrix n _ _)) =
 --   System.IO.Unsafe.unsafePerformIO $ do
