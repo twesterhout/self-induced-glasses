@@ -14,6 +14,7 @@ import qualified Data.ByteString.Builder as Builder
 import qualified Data.HDF5 as H5
 -- import Data.List (intercalate)
 import Data.Text (Text, unpack)
+import qualified Data.Text as T
 -- import qualified Data.Vector as B
 import Data.Vector.Generic (Vector)
 import qualified Data.Vector.Generic as G
@@ -109,15 +110,23 @@ computeLocalObservables couplings states filename = do
     hSetBuffering h (BlockBuffering Nothing) -- (Just 65536))
     Builder.hPutBuilder h (renderTable observables)
 
+dumpArrayToFile :: S.Vector ℝ -> Text -> IO ()
+dumpArrayToFile xs filename
+  | T.isSuffixOf ".csv" filename =
+      let table =
+            mconcat $
+              fmap (\f -> Builder.floatDec f <> Builder.charUtf8 '\n') $
+                G.toList xs
+       in withFile (unpack filename) WriteMode $ \h ->
+            Builder.hPutBuilder h table
+  | T.isSuffixOf ".h5" filename =
+      H5.withFile filename H5.WriteTruncate $ \h ->
+        H5.createDataset h "data" xs
+
 computeAutocorrFunction :: ConfigurationBatch -> Text -> IO ()
-computeAutocorrFunction states filename = do
-  let table =
-        mconcat $
-          fmap (\f -> Builder.floatDec f <> Builder.charUtf8 '\n') $
-            G.toList $
-              autocorrStates states
-  withFile (unpack filename) WriteMode $ \h ->
-    Builder.hPutBuilder h table
+computeAutocorrFunction states filename = dumpArrayToFile values filename
+  where
+    values = autocorrStates states
 
 foreign import capi unsafe "two_point_autocorr_function"
   two_point_autocorr_function :: Int -> Int -> Ptr Word64 -> Int -> Ptr CFloat -> IO ()

@@ -223,8 +223,9 @@ buildCouplings model = Couplings $ buildInteractionMatrix model rₘₐₓ
 buildSKModel :: (PrimMonad m, StatefulGen g m) => Int -> g -> m Couplings
 buildSKModel n g = do
   v <- GM.new (n * n)
-  let f !i !j
-        | i <= j = realToFrac <$> Distributions.normal 0 1 g
+  let scale = 1 / sqrt (fromIntegral n)
+      f !i !j
+        | i <= j = realToFrac . (* scale) <$> Distributions.normal 0 1 g
         | otherwise = error "nope, use symmetry"
       go2 !i !j
         | j < n = do
