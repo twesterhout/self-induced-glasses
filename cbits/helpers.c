@@ -146,6 +146,31 @@ ptrdiff_t hamming_weight(ptrdiff_t const n, uint64_t const *const restrict x) {
   return m;
 }
 
+void compute_structure_factor(HsInt const batch_size, HsInt const number_bits,
+                              uint64_t const *const restrict input,
+                              float *const restrict out) {
+  memset(out, /*ch=*/0, /*count=*/number_bits * number_bits * sizeof(float));
+  // Diagonal part
+  for (ptrdiff_t i = 0; i < number_bits; ++i) {
+    out[i * number_bits + i] = 1.0f;
+  }
+  // Off-diagonal part
+  ptrdiff_t const number_words = (number_bits + 63) / 64;
+  float const scale = 1.0f / batch_size;
+  for (ptrdiff_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
+    uint64_t const *const x = input + batch_idx * number_words;
+    for (ptrdiff_t i = 0; i < number_bits; ++i) {
+      float const s_i = read_spin(x, i);
+      for (ptrdiff_t j = i + 1; j < number_bits; ++j) {
+        float const s_j = read_spin(x, j);
+        float const term = scale * s_i * s_j;
+        out[i * number_bits + j] += term;
+        out[j * number_bits + i] += term;
+      }
+    }
+  }
+}
+
 void recompute_energy_changes(ptrdiff_t const n,
                               float const *const restrict couplings,
                               float *const restrict delta_energies,

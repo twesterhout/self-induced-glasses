@@ -84,6 +84,15 @@ magnetizationPerSite (Configuration n v) = m / fromIntegral n
 energyPerSite :: Couplings -> Configuration -> ℝ
 energyPerSite couplings x@(Configuration n _) = totalEnergy couplings x / fromIntegral n
 
+
+computeStructureFactor :: ConfigurationBatch -> Text -> IO ()
+computeStructureFactor states filename = do
+  H5.withFile filename H5.WriteTruncate $ \h ->
+    H5.createDataset h "data" values
+  where
+    values = realSpaceStructureFactor states
+
+
 foreign import capi unsafe "compute_structure_factor"
   compute_structure_factor :: Int -> Int -> Ptr Word64 -> Ptr CFloat -> IO ()
 

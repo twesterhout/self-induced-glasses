@@ -25,3 +25,6 @@ void contiguous_axpy(HsInt n, float a, float const *x, float *y);
 
 void two_point_autocorr_function(HsInt n, HsInt offset, uint64_t const *bits,
                                  HsInt number_bits, float *out);
+
+void compute_structure_factor(HsInt batch_size, HsInt number_bits,
+                              uint64_t const *input, float *out);

@@ -66,30 +66,30 @@ run settings = do
   let n = settingsSideLength settings
       lattice = Lattice (n, n) squareLatticeVectors
       λ = settingsLambda settings
-      -- model = 
+      -- model =
       seed = settingsSeed settings
       sweepSize = settingsSweepSize settings
       steps = settingsAnnealingSteps settings
-      -- filename = pack $ printf "data/annealing_result_n=%d_λ=%f_seed=%d.h5" n λ seed
-      -- sample g = do
-      --   lift $ putStrLn "[*] Running Monte Carlo ..."
-      --   results <- anneal sweepSize steps g
-      --   lift $ putStrLn "[*] Saving results ..."
-      --   couplings <- asks msCoupling
-      --   lift $
-      --     H5.withFile filename H5.WriteTruncate $ \h -> do
-      --       H5.writeAttribute h "λ" (H5.Scalar λ)
-      --       H5.writeAttribute h "seed" (H5.Scalar seed)
-      --       H5.writeAttribute h "sweepSize" (H5.Scalar sweepSize)
-      --       case couplings of
-      --         (Couplings m) -> H5.createDataset h "couplings" m
-      --       forM_ (zip steps results) $ \((β, numberThermalization, _), (states, acceptance)) -> do
-      --         group <- H5.createGroup h (pack $ printf "%f" β)
-      --         case states of
-      --           (ConfigurationBatch _ m) -> H5.createDataset group "states" m
-      --         H5.writeAttribute group "acceptance" (H5.Scalar acceptance)
-      --         H5.writeAttribute group "thermalization" (H5.Scalar numberThermalization)
-      --         H5.writeAttribute group "β" (H5.Scalar β)
+  -- filename = pack $ printf "data/annealing_result_n=%d_λ=%f_seed=%d.h5" n λ seed
+  -- sample g = do
+  --   lift $ putStrLn "[*] Running Monte Carlo ..."
+  --   results <- anneal sweepSize steps g
+  --   lift $ putStrLn "[*] Saving results ..."
+  --   couplings <- asks msCoupling
+  --   lift $
+  --     H5.withFile filename H5.WriteTruncate $ \h -> do
+  --       H5.writeAttribute h "λ" (H5.Scalar λ)
+  --       H5.writeAttribute h "seed" (H5.Scalar seed)
+  --       H5.writeAttribute h "sweepSize" (H5.Scalar sweepSize)
+  --       case couplings of
+  --         (Couplings m) -> H5.createDataset h "couplings" m
+  --       forM_ (zip steps results) $ \((β, numberThermalization, _), (states, acceptance)) -> do
+  --         group <- H5.createGroup h (pack $ printf "%f" β)
+  --         case states of
+  --           (ConfigurationBatch _ m) -> H5.createDataset group "states" m
+  --         H5.writeAttribute group "acceptance" (H5.Scalar acceptance)
+  --         H5.writeAttribute group "thermalization" (H5.Scalar numberThermalization)
+  --         H5.writeAttribute group "β" (H5.Scalar β)
   -- (g :: Xoshiro256PlusPlus (PrimState IO)) <- mkXoshiro256PlusPlus 673489534
   -- couplings@(Couplings (DenseMatrix numberSpins _ _)) <- buildSKModel n g
   couplings <- pure $ buildCouplings (Model lattice λ)
@@ -98,26 +98,29 @@ run settings = do
   putStrLn "[*] Analyzing ..."
   forM_ (zip steps results) $ \((β, _, _), (states, acceptance)) -> do
     let autocorrFilename = pack $ printf "data/autocorr_n=%d_λ=%f_β=%f_seed=%d.h5" n λ β seed
+        structureFilename = pack $ printf "data/structure_n=%d_λ=%f_β=%f_seed=%d.h5" n λ β seed
     putStrLn $ printf "      β=%f, acceptance=%f" β acceptance
     computeAutocorrFunction states autocorrFilename
-  -- H5.withFile filename H5.ReadOnly $ \h -> do
-  --   ListT.traverse_ pure $
-  --     H5.forGroupM h $ \case
-  --       g@H5.Group -> do
-  --         (H5.Scalar (β :: ℝ)) <- H5.readAttribute g "β"
-  --         liftIO $ putStrLn $ printf "[*] Processing results for β=%f ..." β
-  --         states <- fmap (ConfigurationBatch numberSpins) $ H5.readDataset =<< H5.open g "states"
-  --         let -- observablesFilename = pack $ printf "data/observables_n=%d_λ=%f_β=%f_seed=%d.csv" n λ β seed
-  --             -- autocorrFilename t_w = pack $ printf "data/autocorr_n=%d_λ=%f_β=%f_t=%d_seed=%d.csv" n λ β t_w seed
-  --             autocorrFilename = pack $ printf "data/autocorr_n=%d_λ=%f_β=%f_seed=%d.csv" n λ β seed
-  --         -- liftIO $ computeLocalObservables couplings states observablesFilename
-  --         liftIO $ putStrLn "[*] Computing autocorr ..."
-  --         liftIO $ computeAutocorrFunction states autocorrFilename
-  --         -- liftIO $
-  --         --   forM_ [32, 128, 512, 2048, 8192] $ \t_w ->
-  --         --     computeTwoPointAutocorrFunction t_w states (autocorrFilename t_w)
-  --       _ -> pure ()
-  -- pure ()
+    computeStructureFactor states structureFilename
+
+-- H5.withFile filename H5.ReadOnly $ \h -> do
+--   ListT.traverse_ pure $
+--     H5.forGroupM h $ \case
+--       g@H5.Group -> do
+--         (H5.Scalar (β :: ℝ)) <- H5.readAttribute g "β"
+--         liftIO $ putStrLn $ printf "[*] Processing results for β=%f ..." β
+--         states <- fmap (ConfigurationBatch numberSpins) $ H5.readDataset =<< H5.open g "states"
+--         let -- observablesFilename = pack $ printf "data/observables_n=%d_λ=%f_β=%f_seed=%d.csv" n λ β seed
+--             -- autocorrFilename t_w = pack $ printf "data/autocorr_n=%d_λ=%f_β=%f_t=%d_seed=%d.csv" n λ β t_w seed
+--             autocorrFilename = pack $ printf "data/autocorr_n=%d_λ=%f_β=%f_seed=%d.csv" n λ β seed
+--         -- liftIO $ computeLocalObservables couplings states observablesFilename
+--         liftIO $ putStrLn "[*] Computing autocorr ..."
+--         liftIO $ computeAutocorrFunction states autocorrFilename
+--         -- liftIO $
+--         --   forM_ [32, 128, 512, 2048, 8192] $ \t_w ->
+--         --     computeTwoPointAutocorrFunction t_w states (autocorrFilename t_w)
+--       _ -> pure ()
+-- pure ()
 
 analyzeDynamics :: MainSettings -> IO ()
 analyzeDynamics settings = do
@@ -129,10 +132,10 @@ analyzeDynamics settings = do
       seed = settingsSeed settings
       sweepSize = settingsSweepSize settings
       steps = settingsAnnealingSteps settings
-      -- filename = pack $ printf "data/annealing_result_n=%d_λ=%f_seed=%d.h5" n λ seed
-      -- sample g = do
-      --   lift $ putStrLn "[*] Running Monte Carlo ..."
-      --   anneal sweepSize steps g
+  -- filename = pack $ printf "data/annealing_result_n=%d_λ=%f_seed=%d.h5" n λ seed
+  -- sample g = do
+  --   lift $ putStrLn "[*] Running Monte Carlo ..."
+  --   anneal sweepSize steps g
   -- lift $ putStrLn "[*] Saving results ..."
   -- couplings <- asks msCoupling
   -- lift $
@@ -275,8 +278,9 @@ analyzeDynamics settings = do
 
 main :: IO ()
 main = run =<< execParser opts
-       -- analyzeDynamics =<< execParser opts
   where
+    -- analyzeDynamics =<< execParser opts
+
     opts = info (pMainSettings <**> helper) fullDesc
 
 --       ( fullDesc
