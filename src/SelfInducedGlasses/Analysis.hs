@@ -83,6 +83,18 @@ magnetizationPerSite (Configuration n v) = m / fromIntegral n
 energyPerSite :: Couplings -> Configuration -> ℝ
 energyPerSite couplings x@(Configuration n _) = totalEnergy couplings x / fromIntegral n
 
+foreign import capi unsafe "compute_structure_factor"
+  compute_structure_factor :: Int -> Int -> Ptr Word64 -> Ptr CFloat -> IO ()
+
+realSpaceStructureFactor :: ConfigurationBatch -> DenseMatrix S.Vector ℝ
+realSpaceStructureFactor (ConfigurationBatch numberBits (DenseMatrix batchSize numberWords bits)) =
+  System.IO.Unsafe.unsafePerformIO $ do
+    out <- SM.unsafeNew (numberBits * numberBits)
+    S.unsafeWith bits $ \(bitsPtr :: Ptr Word64) ->
+      SM.unsafeWith out $ \(outPtr :: Ptr Float) ->
+        compute_structure_factor batchSize numberBits bitsPtr (castPtr outPtr)
+    DenseMatrix numberBits numberBits <$> G.unsafeFreeze out
+
 localObservables :: Couplings -> ConfigurationBatch -> U.Vector (ℝ, ℝ)
 localObservables couplings states =
   System.IO.Unsafe.unsafePerformIO $ do
