@@ -99,9 +99,11 @@ run settings = do
   forM_ (zip steps results) $ \((β, _, _), (states, acceptance)) -> do
     let autocorrFilename = pack $ printf "data/autocorr_n=%d_λ=%f_β=%f_seed=%d.h5" n λ β seed
         structureFilename = pack $ printf "data/structure_n=%d_λ=%f_β=%f_seed=%d.h5" n λ β seed
+        observablesFilename = pack $ printf "data/local_observables_n=%d_λ=%f_β=%f_seed=%d.h5" n λ β seed
     putStrLn $ printf "      β=%f, acceptance=%f" β acceptance
     computeAutocorrFunction states autocorrFilename
     computeStructureFactor states structureFilename
+    computeLocalObservables couplings states observablesFilename
 
 -- H5.withFile filename H5.ReadOnly $ \h -> do
 --   ListT.traverse_ pure $
