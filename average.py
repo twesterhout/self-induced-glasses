@@ -5,33 +5,34 @@ import os
 
 os.makedirs("data/mean", exist_ok=True)
 
-n = 25
-λ = 1.5
-seed = 47607
-for β in [0.2, 0.6, 1.0, 1.4, 1.8, 2.2, 2.6, 3.0]:
-    print("Processing β={}".format(β))
+def _mean_impl(prefix, n, λ, β, expand):
     fns = []
-    for i in range(1, 61):
-        input_filename = "data/autocorr_n={}_λ={}_β={}_seed={}.h5".format(n, λ, β, seed + i)
-        with h5py.File(input_filename, "r") as input:
-            fns.append(np.asarray(input["data"]))
-        # np.loadtxt(input_filename))
-    fns = np.vstack(fns)
-    fns = np.mean(fns, axis=0)
-    output_filename = "data/mean/autocorr_n={}_λ={}_β={}.csv".format(n, λ, β)
-    np.savetxt(output_filename, fns)
-
-for β in [0.2, 0.6, 1.0, 1.4, 1.8, 2.2, 2.6, 3.0]:
-    print("Processing β={}".format(β))
-    fns = []
-    for filename in glob.glob("data/structure_n={}_λ={}_β={}_seed=*.h5".format(n, λ, β)):
+    for filename in glob.glob("data/{}_n={}_λ={}_β={}_seed=*.h5".format(prefix, n, λ, β)):
         with h5py.File(filename, "r") as input:
-            fns.append(np.expand_dims(input["data"], 0))
+            f = np.asarray(input["data"])
+        if expand:
+            f = np.expand_dims(f, 0)
+        fns.append(f)
     fns = np.vstack(fns)
     fns = np.mean(fns, axis=0)
-    output_filename = "data/mean/structure_n={}_λ={}_β={}.h5".format(n, λ, β)
-    with h5py.File(output_filename, "w") as output:
-        output["data"] = fns
+    return fns
+
+def mean_autocorr(n, λ, β):
+    return _mean_impl("autocorr", n, λ, β, expand=False)
+
+def mean_structure_factor(n, λ, β):
+    return _mean_impl("structure", n, λ, β, expand=True)
+
+n = 25
+for λ in [2.5, 4.0]:
+    for β in [0.05, 0.2, 0.6, 1.0, 1.4, 2.2, 3.0]:
+        print("[*] Processing λ={}, β={}".format(λ, β))
+        np.savetxt(
+            "data/mean/autocorr_n={}_λ={}_β={}.csv".format(n, λ, β),
+            mean_autocorr(n, λ, β)
+        )
+        with h5py.File("data/mean/structure_n={}_λ={}_β={}.h5".format(n, λ, β), "w") as output:
+            output["data"] = mean_structure_factor(n, λ, β)
 
 # for t_w in [32, 128, 512, 2048, 8192, 32768]:
 #     print("Processing t_w={}".format(t_w))
