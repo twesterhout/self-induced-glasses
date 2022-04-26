@@ -21,9 +21,11 @@ def fourier_transform_structure_factor(S, number_points: int):
             out[q_i, q_j] = np.dot(S.reshape(-1), np.cos(q_x * delta_x + q_y * delta_y).reshape(-1))
     return out
 
-for filename in glob.glob("data/mean/structure_n=25_λ=2.5_β=*.h5"):
-    print("[*] Processing {} ...".format(filename))
-    with h5py.File(filename, "r") as f:
-        Sr = np.asarray(f["data"])
-    Sq = fourier_transform_structure_factor(Sr, number_points=51)
-    np.savetxt(filename.replace(".h5", ".dat").replace("structure_", "structure_fourier_"), Sq)
+n = 25
+for λ in [2.5, 4.0]:
+    for filename in glob.glob("data/mean/structure_n={}_λ={}_β=*.h5".format(n, λ)):
+        print("[*] Processing {} ...".format(filename))
+        with h5py.File(filename, "r") as f:
+            Sr = np.asarray(f["data"])
+        Sq = fourier_transform_structure_factor(Sr, number_points=51)
+        np.savetxt(filename.replace(".h5", ".dat").replace("structure_", "structure_fourier_"), Sq)
