@@ -1,4 +1,4 @@
-cabal-version:       2.4
+cabal-version:       3.0
 name:                self-induced-glasses
 version:             0.0.0.0
 synopsis:            See README for more info
@@ -43,16 +43,18 @@ common common-options
 library
   import:              common-options
   hs-source-dirs:      src
-  exposed-modules:     SelfInducedGlasses
-                       SelfInducedGlasses.Core
-                       SelfInducedGlasses.Metropolis
-                       SelfInducedGlasses.Analysis
-                       SelfInducedGlasses.Interaction
-                       SelfInducedGlasses.Random
-  c-sources:           cbits/helpers.c
-                       cbits/xoshiro256plusplus.c
-                       third_party/kissfft-131.1.0/kiss_fft.c
-                       third_party/kissfft-131.1.0/kfc.c
+  exposed-modules:     SelfInducedGlasses.Sampling
+                       -- SelfInducedGlasses
+                       -- SelfInducedGlasses.Core
+                       -- SelfInducedGlasses.Metropolis
+                       -- SelfInducedGlasses.Analysis
+                       -- SelfInducedGlasses.Interaction
+                       -- SelfInducedGlasses.Random
+  c-sources:           cbits/metropolis.c
+  --                      cbits/helpers.c
+  --                      cbits/xoshiro256plusplus.c
+  --                      third_party/kissfft-131.1.0/kiss_fft.c
+  --                      third_party/kissfft-131.1.0/kfc.c
                        -- third_party/kissfft-131.1.0/kiss_fftnd.c
                        -- third_party/kissfft-131.1.0/kiss_fftndr.c
                        -- third_party/kissfft-131.1.0/kiss_fftr.c
@@ -65,50 +67,55 @@ library
                      , third_party/kissfft-131.1.0
   -- extra-lib-dirs:      /usr/lib/x86_64-linux-gnu/openblas-openmp
   extra-libraries:     blas
-                     , fftw3f
+                     -- , fftw3f
   build-depends:       vector
                      , text
+                     , async
                      , deepseq
-                     , scheduler
+                     -- , scheduler
                      , containers
                      , bytestring
                      , random >= 1.2
-                     , mwc-random
+                     -- , mwc-random
                      , primitive
                      , ghc-prim
                      , mtl
-                     , MemoTrie
-                     , hdf5-hs
+                     -- , MemoTrie
+                     -- , hdf5-hs
                      , list-t
-                     , unliftio
+                     , unliftio-core
+                     , ansi-wl-pprint
                      -- , co-log
+  haddock-options:   --haddock-html-location='https://hackage.haskell.org/package/$pkg-$version/docs' --haddock-hyperlink-source
 
-executable self-induced-glasses
-  import:              common-options
-  hs-source-dirs:      app
-  main-is:             Main.hs
-  build-depends:       self-induced-glasses
-                     , random
-                     , primitive
-                     , vector
-                     , mtl
-                     , text
-                     , hdf5-hs
-                     , list-t
-                     , optparse-applicative
-                     , split
-  ghc-options:         -threaded
-                       -rtsopts
-                       -with-rtsopts=-N
-
-test-suite self-induced-glasses-test
-  import:              common-options
-  type:                exitcode-stdio-1.0
-  hs-source-dirs:      test
-  main-is:             Spec.hs
-  build-depends:       self-induced-glasses
-                     , random
-                     , vector
-  ghc-options:         -threaded
-                       -rtsopts
-                       -with-rtsopts=-N
+-- executable self-induced-glasses
+--   buildable:           False
+--   import:              common-options
+--   hs-source-dirs:      app
+--   main-is:             Main.hs
+--   build-depends:       self-induced-glasses
+--                      , random
+--                      , primitive
+--                      , vector
+--                      , mtl
+--                      , text
+--                      , hdf5-hs
+--                      , list-t
+--                      , optparse-applicative
+--                      , split
+--   ghc-options:         -threaded
+--                        -rtsopts
+--                        -with-rtsopts=-N
+-- 
+-- test-suite self-induced-glasses-test
+--   buildable:           False
+--   import:              common-options
+--   type:                exitcode-stdio-1.0
+--   hs-source-dirs:      test
+--   main-is:             Spec.hs
+--   build-depends:       self-induced-glasses
+--                      , random
+--                      , vector
+--   ghc-options:         -threaded
+--                        -rtsopts
+--                        -with-rtsopts=-N
