@@ -32,6 +32,9 @@ module SelfInducedGlasses.Sampling
 where
 
 import Control.DeepSeq
+import Control.Foldl (FoldM (..))
+import qualified Control.Foldl as Foldl
+import Control.Monad (forM, unless)
 import Control.Monad.IO.Unlift
 import Control.Monad.Primitive
 import Data.IORef
@@ -47,7 +50,9 @@ import Foreign.Ptr
 import Foreign.Storable
 import GHC.Generics
 import System.Random.Stateful
-import Text.PrettyPrint.ANSI.Leijen
+import Text.PrettyPrint.ANSI.Leijen (Doc, Pretty (..))
+import qualified Text.PrettyPrint.ANSI.Leijen as Pretty
+import UnliftIO.Async
 
 type ℝ = Float
 
@@ -105,72 +110,118 @@ data ProbDist = ProbDist {pdBeta :: !ℝ, pdHamiltonian :: !Couplings}
 
 data ReplicaExchangeSchedule = ReplicaExchangeSchedule
   { resIntervals :: B.Vector [(Int, Int)],
-    resSwaps :: B.Vector Int
+    resSwaps :: B.Vector (Int, ℝ)
   }
   deriving stock (Show)
 
+data ReplicaColor = ReplicaBlue | ReplicaRed
+
 data ReplicaExchangeState g = ReplicaExchangeState
-  {resBeta :: !ℝ, resState :: !MetropolisState, resGen :: !g}
+  { resProb :: !ProbDist,
+    resState :: !MetropolisState,
+    resColor :: !ReplicaColor,
+    resStats :: !SweepStats,
+    resGen :: !g
+  }
 
 -- | Try exchanging two replicas at indices @i@ and @i+1@.
 maybeExchangeReplicas ::
   MonadUnliftIO m =>
-  -- | Index @i@. An exchange of replicas @i@ and @i+1@ is attempted.
-  Int ->
+  ReplicaExchangeState g ->
+  ReplicaExchangeState g ->
   -- | A uniform random number in @[0, 1)@. Required to make the decision stochastic.
   ℝ ->
-  -- | Initial state.
-  B.Vector (ReplicaExchangeState g) ->
   -- | Final state where replicas @i@ and @i+1@ could have been swapped.
-  m (B.Vector (ReplicaExchangeState g))
-maybeExchangeReplicas i u replicas
-  -- either @i@ or @i+1@ falls outside of valid indices for @replicas@, so we reject the exchange
-  | i < 0 || i >= G.length replicas - 1 = pure replicas
-  | otherwise = do
+  m (ReplicaExchangeState g, ReplicaExchangeState g)
+maybeExchangeReplicas
+  r1@(ReplicaExchangeState (ProbDist β1 _) s1 c1 _ _)
+  r2@(ReplicaExchangeState (ProbDist β2 _) s2 c2 _ _)
+  u = do
     δe <- withRunInIO $ \_ -> do
       e1 <- readIORef (msCurrentEnergy s1)
       e2 <- readIORef (msCurrentEnergy s2)
       pure $ realToFrac (e2 - e1)
     if u <= exp (δβ * δe)
       then
-        let -- We swap the spin configurations only leaving the βs and random number generators
+        let -- We swap the spin configurations only, leaving the βs and random number generators
             -- unchanged.
-            r1' = r1 {resState = s2}
-            r2' = r2 {resState = s1}
-         in pure $ replicas G.// [(i, r1'), (i + 1, r2')]
-      else pure replicas
-  where
-    r1@(ReplicaExchangeState β1 s1 _) = replicas ! i
-    r2@(ReplicaExchangeState β2 s2 _) = replicas ! (i + 1)
-    δβ = β2 - β1
+            r1' = r1 {resState = s2, resColor = c2}
+            r2' = r2 {resState = s1, resColor = c1}
+         in pure (r1', r2')
+      else pure (r1, r2)
+    where
+      δβ = β2 - β1
 
 runReplicaExchangeSchedule ::
-  MonadUnliftIO m =>
+  forall g m.
+  (MonadUnliftIO m, StatefulGen g m) =>
+  Int ->
   ReplicaExchangeSchedule ->
   B.Vector (ReplicaExchangeState g) ->
   m (B.Vector (ReplicaExchangeState g))
-runReplicaExchangeSchedule schedule states = undefined
+runReplicaExchangeSchedule sweepSize schedule₀ states₀ =
+  Foldl.foldM (FoldM step initial extract) (resSwaps schedule₀)
+  where
+    spawn ::
+      ReplicaExchangeState g ->
+      [(Int, Int)] ->
+      m (Async (ReplicaExchangeState g), [(Int, Int)])
+    spawn replica@(ReplicaExchangeState probDist state _ stats g) intervals =
+      case intervals of
+        ((start, end) : others) -> do
+          future <- async $ do
+            stats' <- doManySweeps probDist (end - start) sweepSize state g
+            pure $ replica {resStats = stats <> stats'}
+          pure (future, others)
+        [] -> do
+          future <- async $ pure replica
+          pure (future, [])
+    initial :: m (B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]))
+    initial = G.zipWithM spawn states₀ (resIntervals schedule₀)
+    step ::
+      B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]) ->
+      (Int, ℝ) ->
+      m (B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]))
+    step accumulators (i, u) = do
+      let (future1, intervals1) = accumulators ! i
+          (future2, intervals2) = accumulators ! (i + 1)
+      state1 <- wait future1
+      state2 <- wait future2
+      -- TODO: how to update the colors
+      (state1', state2') <- maybeExchangeReplicas state1 state2 u
+      acc1' <- spawn state1' intervals1
+      acc2' <- spawn state2' intervals2
+      pure $ accumulators G.// [(i, acc1'), (i + 1, acc2')]
+    extract ::
+      B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]) ->
+      m (B.Vector (ReplicaExchangeState g))
+    extract accumulators =
+      G.forM accumulators $ \(future, intervals) -> do
+        unless (null intervals) $ error "not all intervals have been processed"
+        wait future
 
 -- 🡼 🡽 🡾 🡿
 -- "╸╺"
 --
--- rowIdx: 0   🡾🡽━━🡾🡽━━╸╺━━╸╺━━🡾🡽  [(0, 1), (1, 4)]
---         1   🡽🡾━━🡽🡾━━🡾🡽━━🡾🡽━━🡽🡾  [(0, 1), (1, 2), (2, 3), (3, 4)]
---         2     ━━╸╺━━🡽🡾━━🡽🡾━━    [(0, 2), (2, 3), (3, 4)]
---            [0,  0,  1,  1,  0]
+-- rowIdx: 0   ━━🡾🡽━━╸╺━━╸╺━━🡾🡽  [(0, 1), (1, 4)]
+--         1   ━━🡽🡾━━🡾🡽━━🡾🡽━━🡽🡾  [(0, 1), (1, 2), (2, 3), (3, 4)]
+--         2   ━━╸╺━━🡽🡾━━🡽🡾━━    [(0, 2), (2, 3), (3, 4)]
+--              [0,  1,  1,  0]
 
-prettyInterval :: G.Vector v Int => Int -> (Int, Int) -> v Int -> Doc
-prettyInterval rowIdx (start, end) swaps = left <> hcat middle <> right
+prettyInterval :: G.Vector v (Int, ℝ) => Int -> (Int, Int) -> v (Int, ℝ) -> Doc
+prettyInterval rowIdx (start, end) swaps =
+  Pretty.text left <> Pretty.hcat middle <> Pretty.text right
   where
-    middle = punctuate (text "╸╺") (replicate (end - start) (text "━━"))
+    middle = Pretty.punctuate (Pretty.text "╸╺") (replicate (end - start) (Pretty.text "━━"))
     left
-      | swaps ! start == rowIdx = text "🡽"
-      | swaps ! start == rowIdx - 1 = text "🡾"
-      | otherwise = text "╺"
+      | start <= 0 = "╺"
+      | fst (swaps ! (start - 1)) == rowIdx = "🡽"
+      | fst (swaps ! (start - 1)) == rowIdx - 1 = "🡾"
+      | otherwise = "╺"
     right
-      | swaps ! end == rowIdx = text "🡾"
-      | swaps ! end == rowIdx - 1 = text "🡽"
-      | otherwise = text "╸"
+      | fst (swaps ! (end - 1)) == rowIdx = "🡾"
+      | fst (swaps ! (end - 1)) == rowIdx - 1 = "🡽"
+      | otherwise = "╸"
 
 prettyRow :: ReplicaExchangeSchedule -> Int -> Doc
 prettyRow schedule rowIdx =
@@ -181,24 +232,24 @@ prettyRow schedule rowIdx =
 
 prettySchedule :: ReplicaExchangeSchedule -> Doc
 prettySchedule schedule =
-  vcat $
+  Pretty.vcat $
     fmap (prettyRow schedule) [0 .. G.length (resIntervals schedule) - 1]
 
 instance Pretty ReplicaExchangeSchedule where
   pretty = prettySchedule
 
-mkIntervals :: G.Vector v Int => v Int -> Int -> [(Int, Int)]
+mkIntervals :: G.Vector v (Int, ℝ) => v (Int, ℝ) -> Int -> [(Int, Int)]
 mkIntervals swaps replicaIdx = go [(0, G.length swaps - 1)] (G.length swaps - 2)
   where
     go acc@((!start, !end) : rest) !i
       | i <= 0 = acc
-      | swaps ! i == replicaIdx
-          || swaps ! i == replicaIdx - 1 =
+      | fst (swaps ! (i - 1)) == replicaIdx
+          || fst (swaps ! (i - 1)) == replicaIdx - 1 =
         go ((start, i) : (i, end) : rest) (i - 1)
       | otherwise = go acc (i - 1)
     go _ _ = error "this should never happen by construction"
 
-mkSchedule :: G.Vector v Int => Int -> v Int -> ReplicaExchangeSchedule
+mkSchedule :: G.Vector v (Int, ℝ) => Int -> v (Int, ℝ) -> ReplicaExchangeSchedule
 mkSchedule numReplicas swaps =
   ReplicaExchangeSchedule
     (G.generate numReplicas (mkIntervals swaps))

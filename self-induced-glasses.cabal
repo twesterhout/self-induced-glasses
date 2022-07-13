@@ -82,8 +82,10 @@ library
                      , mtl
                      -- , MemoTrie
                      -- , hdf5-hs
+                     , foldl
                      , list-t
                      , unliftio-core
+                     , unliftio
                      , ansi-wl-pprint
                      -- , co-log
   haddock-options:   --haddock-html-location='https://hackage.haskell.org/package/$pkg-$version/docs' --haddock-hyperlink-source
