@@ -1,6 +1,7 @@
 {-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : SelfInducedGlasses.Sampling
@@ -19,6 +20,8 @@ module SelfInducedGlasses.Sampling
     ProbDist (..),
     ReplicaExchangeSchedule (..),
     ReplicaExchangeState (..),
+    totalEnergy,
+    energyChanges,
     maybeExchangeReplicas,
     prettySchedule,
     mkIntervals,
@@ -37,6 +40,7 @@ import qualified Control.Foldl as Foldl
 import Control.Monad (forM, unless)
 import Control.Monad.IO.Unlift
 import Control.Monad.Primitive
+import Data.Bits
 import Data.IORef
 import qualified Data.Vector as B
 import Data.Vector.Generic ((!))
@@ -44,11 +48,15 @@ import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Generic.Mutable as GM
 import qualified Data.Vector.Storable as S
 import qualified Data.Vector.Storable.Mutable as SM
+import qualified Data.Vector.Unboxed as U
 import Data.Word
 import Foreign.Marshal.Utils
 import Foreign.Ptr
 import Foreign.Storable
 import GHC.Generics
+import ListT (ListT)
+import qualified ListT
+import System.IO.Unsafe (unsafePerformIO)
 import System.Random.Stateful
 import Text.PrettyPrint.ANSI.Leijen (Doc, Pretty (..))
 import qualified Text.PrettyPrint.ANSI.Leijen as Pretty
@@ -119,19 +127,21 @@ data ReplicaColor = ReplicaBlue | ReplicaRed
 data ReplicaExchangeState g = ReplicaExchangeState
   { resProb :: !ProbDist,
     resState :: !MetropolisState,
-    resColor :: !ReplicaColor,
+    resColor :: !(Maybe ReplicaColor),
     resStats :: !SweepStats,
     resGen :: !g
   }
 
--- | Try exchanging two replicas at indices @i@ and @i+1@.
+-- | Try exchanging two replicas
 maybeExchangeReplicas ::
   MonadUnliftIO m =>
+  -- | First replica
   ReplicaExchangeState g ->
+  -- | Second replica
   ReplicaExchangeState g ->
   -- | A uniform random number in @[0, 1)@. Required to make the decision stochastic.
   ℝ ->
-  -- | Final state where replicas @i@ and @i+1@ could have been swapped.
+  -- | Potentially updated replicas
   m (ReplicaExchangeState g, ReplicaExchangeState g)
 maybeExchangeReplicas
   r1@(ReplicaExchangeState (ProbDist β1 _) s1 c1 _ _)
@@ -162,10 +172,10 @@ runReplicaExchangeSchedule ::
 runReplicaExchangeSchedule sweepSize schedule₀ states₀ =
   Foldl.foldM (FoldM step initial extract) (resSwaps schedule₀)
   where
-    spawn ::
-      ReplicaExchangeState g ->
-      [(Int, Int)] ->
-      m (Async (ReplicaExchangeState g), [(Int, Int)])
+    -- spawn ::
+    --   ReplicaExchangeState g ->
+    --   [(Int, Int)] ->
+    --   m (Async (ReplicaExchangeState g), [(Int, Int)])
     spawn replica@(ReplicaExchangeState probDist state _ stats g) intervals =
       case intervals of
         ((start, end) : others) -> do
@@ -176,12 +186,12 @@ runReplicaExchangeSchedule sweepSize schedule₀ states₀ =
         [] -> do
           future <- async $ pure replica
           pure (future, [])
-    initial :: m (B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]))
+    -- initial :: m (B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]))
     initial = G.zipWithM spawn states₀ (resIntervals schedule₀)
-    step ::
-      B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]) ->
-      (Int, ℝ) ->
-      m (B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]))
+    -- step ::
+    --   B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]) ->
+    --   (Int, ℝ) ->
+    --   m (B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]))
     step accumulators (i, u) = do
       let (future1, intervals1) = accumulators ! i
           (future2, intervals2) = accumulators ! (i + 1)
@@ -255,6 +265,119 @@ mkSchedule numReplicas swaps =
     (G.generate numReplicas (mkIntervals swaps))
     (G.convert swaps)
 
+randomReplicaExchangeScheduleM :: StatefulGen g m => Int -> Int -> g -> m ReplicaExchangeSchedule
+randomReplicaExchangeScheduleM numReplicas numSwaps g = do
+  swaps <-
+    U.replicateM numSwaps $
+      (,)
+        <$> uniformRM (0, numReplicas - 2) g
+        <*> uniformRM (0, 1) g
+  pure $ mkSchedule numReplicas swaps
+
+-- | Generate a random spin configuration of given length.
+randomConfigurationM ::
+  StatefulGen g m =>
+  -- | Desired length
+  Int ->
+  -- | Random number generator
+  g ->
+  m Configuration
+randomConfigurationM n g
+  | n < 0 = error "negative length"
+  | otherwise = Configuration n <$> G.generateM numWords mkWord
+  where
+    numWords = (n + 63) `div` 64
+    rest = n `mod` 64
+    mkWord i
+      | rest /= 0 && i == numWords - 1 =
+        let mask = ((1 :: Word64) `unsafeShiftL` rest) - 1
+         in (mask .&.) <$> uniformM g
+      | i < numWords - 1 = uniformM g
+
+-- | Generate a random 'MetropolisState'.
+randomMetropolisStateM ::
+  (MonadUnliftIO m, StatefulGen g m) =>
+  -- | The Hamiltonian
+  Couplings ->
+  -- | Random number generator
+  g ->
+  m MetropolisState
+randomMetropolisStateM couplings g = do
+  spins <- randomConfigurationM numSpins g
+  MetropolisState
+    <$> thawConfiguration spins
+    <*> mkCurrentEnergy spins
+    <*> mkDeltaEnergies spins
+  where
+    numSpins = dmNumRows (unCouplings couplings)
+    mkCurrentEnergy spins = withRunInIO $ \_ ->
+      newIORef (totalEnergy couplings spins)
+    mkDeltaEnergies spins = withRunInIO $ \_ ->
+      G.thaw $ energyChanges couplings spins
+
+randomReplicaExchangeStateM ::
+  (MonadUnliftIO m, StatefulGen g m) =>
+  -- | The Hamiltonian
+  Couplings ->
+  -- | Inverse temperature β
+  ℝ ->
+  -- | Random number generator
+  g ->
+  m (ReplicaExchangeState g)
+randomReplicaExchangeStateM couplings β g = do
+  state <- randomMetropolisStateM couplings g
+  pure $ ReplicaExchangeState (ProbDist β couplings) state Nothing mempty g
+
+-- | Compute energy of a spin configuration
+totalEnergy :: Couplings -> Configuration -> Double
+totalEnergy couplings state@(Configuration n _) =
+  unsafePerformIO $
+    withCouplings couplings $ \couplingsPtr ->
+      withConfiguration state $ \statePtr ->
+        pure $
+          realToFrac (c_totalEnergy n couplingsPtr statePtr)
+
+-- | Compute a vector of @ΔE@ that one would get by flipping each spin.
+energyChanges :: Couplings -> Configuration -> S.Vector ℝ
+energyChanges couplings state@(Configuration n _) =
+  G.generate n $ \i ->
+    unsafePerformIO $
+      withCouplings couplings $ \couplingsPtr ->
+        withConfiguration state $ \statePtr ->
+          pure $ c_energyChangeUponFlip n couplingsPtr statePtr i
+
+monteCarloSampling ::
+  forall g m.
+  (MonadUnliftIO m, StatefulGen g m) =>
+  -- | Sweep size
+  Int ->
+  -- | Number of sweeps between measurements
+  Int ->
+  -- | The Hamiltonian
+  Couplings ->
+  -- | Inverse temperatures βs
+  B.Vector ℝ ->
+  -- | Random number generator
+  g ->
+  -- | More random number generators
+  B.Vector g ->
+  m (ListT m ConfigurationBatch)
+monteCarloSampling sweepSize numberSweeps couplings βs gₘₐᵢₙ gs = undefined
+  where
+    initUnfoldState :: m (B.Vector (ReplicaExchangeState g))
+    initUnfoldState = G.zipWithM (\β g -> randomReplicaExchangeStateM couplings β g) βs gs
+    numReplicas = G.length βs
+    freezeReplicas :: B.Vector (ReplicaExchangeState g) -> m ConfigurationBatch
+    freezeReplicas = undefined
+    unfoldStep ::
+      B.Vector (ReplicaExchangeState g) ->
+      m (Maybe (ConfigurationBatch, B.Vector (ReplicaExchangeState g)))
+    unfoldStep replicas = do
+      schedule <- randomReplicaExchangeScheduleM numReplicas numberSweeps gₘₐᵢₙ
+      replicas' <- runReplicaExchangeSchedule sweepSize schedule replicas
+      batch <- freezeReplicas replicas'
+      pure $ Just (batch, replicas')
+
 -- generateSchedule :: StategulGen g m => Int -> Int ->
 
 --
@@ -263,10 +386,10 @@ mkSchedule numReplicas swaps =
 --       {-# UNPACK #-} !Int
 --       {-# UNPACK #-} !(DenseMatrix (S.MVector s) Word64)
 --
--- data ConfigurationBatch
---   = ConfigurationBatch
---       {-# UNPACK #-} !Int
---       {-# UNPACK #-} !(DenseMatrix S.Vector Word64)
+data ConfigurationBatch
+  = ConfigurationBatch
+      {-# UNPACK #-} !Int
+      {-# UNPACK #-} !(DenseMatrix S.Vector Word64)
 
 withVector ::
   (MonadUnliftIO m, Storable a) =>
@@ -284,6 +407,13 @@ withMutableVector v f = withRunInIO $ \runInIO -> SM.unsafeWith v (runInIO . f)
 
 withCouplings :: MonadUnliftIO m => Couplings -> (Ptr ℝ -> m a) -> m a
 withCouplings (Couplings (DenseMatrix _ _ v)) = withVector v
+
+withConfiguration ::
+  MonadUnliftIO m =>
+  Configuration ->
+  (Ptr Word64 -> m a) ->
+  m a
+withConfiguration (Configuration _ v) = withVector v
 
 withMutableConfiguration ::
   MonadUnliftIO m =>
@@ -353,8 +483,37 @@ doManySweeps probDist numberSweeps sweepSize state g = go mempty 0
         go (stats <> stats') (i + 1)
       | otherwise = pure stats
 
+-- | Clone a spin configuration into a mutable one
+thawConfiguration :: MonadUnliftIO m => Configuration -> m MutableConfiguration
+thawConfiguration (Configuration n v) = withRunInIO $ \_ ->
+  MutableConfiguration n <$> G.thaw v
+{-# INLINE thawConfiguration #-}
+
+-- | Freeze a spin configuration into an immutable one
+freezeConfiguration :: MonadUnliftIO m => MutableConfiguration -> m Configuration
+freezeConfiguration (MutableConfiguration n v) = withRunInIO $ \_ ->
+  Configuration n <$> G.freeze v
+{-# INLINE freezeConfiguration #-}
+
+-- | Unsafe version of 'thawConfiguration' which avoids copying. Using this function is only legal
+-- if the original spin configuration will never be used again.
+unsafeThawConfiguration :: MonadUnliftIO m => Configuration -> m MutableConfiguration
+unsafeThawConfiguration (Configuration n v) = withRunInIO $ \_ ->
+  MutableConfiguration n <$> G.unsafeThaw v
+{-# INLINE unsafeThawConfiguration #-}
+
+-- | Unsafe version of 'freezeConfiguration' which avoids copying. Using this function is only legal
+-- if the original spin configuration will never be modified again.
+unsafeFreezeConfiguration :: MonadUnliftIO m => MutableConfiguration -> m Configuration
+unsafeFreezeConfiguration (MutableConfiguration n v) = withRunInIO $ \_ ->
+  Configuration n <$> G.unsafeFreeze v
+{-# INLINE unsafeFreezeConfiguration #-}
+
 foreign import capi unsafe "metropolis.h energy_change_upon_flip"
   c_energyChangeUponFlip :: Int -> Ptr Float -> Ptr Word64 -> Int -> Float
+
+foreign import capi unsafe "metropolis.h total_energy"
+  c_totalEnergy :: Int -> Ptr Float -> Ptr Word64 -> Float
 
 foreign import capi unsafe "metropolis.h run_one_sweep"
   c_runOneSweep :: Int -> Int -> Float -> Ptr Float -> Ptr Int -> Ptr Float -> Ptr Word64 -> Ptr Double -> Ptr Float -> IO Double
