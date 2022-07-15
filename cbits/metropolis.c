@@ -30,6 +30,16 @@ float energy_change_upon_flip(HsInt const number_bits,
   return 2 * overlap * s;
 }
 
+float total_energy(HsInt const n, float const *const restrict couplings,
+                   uint64_t const *const restrict state) {
+  float e = 0.0f;
+  for (HsInt k = 0; k < n; ++k) {
+    const float t = packed_dot_product_scalar(n, couplings + k * n, state);
+    e += read_spin(state, k) * t;
+  }
+  return -e;
+}
+
 double run_one_sweep(HsInt const number_bits, HsInt const number_steps,
                      float const beta, float const couplings[],
                      HsInt const uniform_random_ints[],
