@@ -20,6 +20,10 @@ static inline float read_spin(uint64_t const *const restrict x,
   return 2 * bit - 1;
 }
 
+static inline void flip_spin(uint64_t *const restrict x, ptrdiff_t const i) {
+  x[i / 64] ^= ((uint64_t)1) << (i % 64);
+}
+
 static inline simde__m256 unpack_byte(uint8_t const bits) {
   simde__m256i b1 = simde_mm256_set1_epi32((int32_t)bits); // broadcast bits
   simde__m256i m2 = simde_mm256_setr_epi32(1, 2, 4, 8, 0x10, 0x20, 0x40, 0x80);

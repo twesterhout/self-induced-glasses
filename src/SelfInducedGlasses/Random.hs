@@ -1,24 +1,41 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UnboxedTuples #-}
 
-module SelfInducedGlasses.Random (Xoshiro256PlusPlus, mkXoshiro256PlusPlus, splitForParallel) where
+module SelfInducedGlasses.Random
+  ( Xoshiro256PlusPlus,
+    Xoshiro256PlusPlusState,
+    mkXoshiro256PlusPlus,
+    splitForParallel,
+    VectorizedUniformRange (..),
+  )
+where
 
+-- import Data.Bits
+
+import Control.DeepSeq
+import Control.Monad.IO.Unlift
 import Control.Monad.Primitive
 import Control.Monad.ST
--- import Data.Bits
 import Data.Primitive.ByteArray
 import qualified Data.Vector as B
 import qualified Data.Vector.Generic as G
 import Data.Word
 import Foreign.Ptr (Ptr, castPtr)
+import GHC.Generics
 -- import GHC.Prim
 -- import GHC.Word (Word64 (..))
 import System.Random.Stateful hiding (next)
 
 newtype Xoshiro256PlusPlus s = Xoshiro256PlusPlus (MutableByteArray s)
+  deriving stock (Generic)
+  deriving anyclass (NFData)
 
 newtype Xoshiro256PlusPlusState = Xoshiro256PlusPlusState ByteArray
+  deriving stock (Show, Generic)
+  deriving anyclass (NFData)
 
 mkXoshiro256PlusPlus :: PrimMonad m => Int -> m (Xoshiro256PlusPlus (PrimState m))
 mkXoshiro256PlusPlus seed = do
@@ -39,6 +56,12 @@ foreign import ccall unsafe "xoshiro256plusplus_next"
 
 foreign import ccall unsafe "xoshiro256plusplus_jump"
   jumpXoshiro256PlusPlus :: Ptr Word64 -> IO ()
+
+foreign import ccall unsafe "xoshiro256plusplus_many_HsInt"
+  manyIntsXoshiro256PlusPlus :: Int -> Int -> Ptr Int -> Ptr Word64 -> IO ()
+
+foreign import ccall unsafe "xoshiro256plusplus_many_float"
+  manyFloatsXoshiro256PlusPlus :: Int -> Ptr Float -> Ptr Word64 -> IO ()
 
 -- unsafeRotateL :: Word64 -> Int -> Word64
 -- unsafeRotateL w k = (unsafeShiftL w k) .|. (unsafeShiftR w (64 - k))
@@ -116,6 +139,29 @@ jump' (Xoshiro256PlusPlusState v) = runST $ do
 
 splitForParallel :: Int -> Xoshiro256PlusPlusState -> B.Vector Xoshiro256PlusPlusState
 splitForParallel n s₀ = G.iterateN n jump' s₀
+
+class (StatefulGen g m, MonadUnliftIO m) => VectorizedUniformRange g m a where
+  vectorizedUniformRM :: (a, a) -> Int -> Ptr a -> g -> m ()
+
+instance
+  (MonadUnliftIO m, PrimMonad m, s ~ PrimState m) =>
+  VectorizedUniformRange (Xoshiro256PlusPlus s) m Int
+  where
+  {-# INLINE vectorizedUniformRM #-}
+  vectorizedUniformRM (0, r) count bufferPtr (Xoshiro256PlusPlus v) =
+    liftIO $
+      manyIntsXoshiro256PlusPlus count r bufferPtr (castPtr (mutableByteArrayContents v))
+  vectorizedUniformRM (_, _) _ _ _ = error "uniform ranges starting from non-zero values are not yet supported"
+
+instance
+  (MonadUnliftIO m, PrimMonad m, s ~ PrimState m) =>
+  VectorizedUniformRange (Xoshiro256PlusPlus s) m Float
+  where
+  {-# INLINE vectorizedUniformRM #-}
+  vectorizedUniformRM (0, 1) count bufferPtr (Xoshiro256PlusPlus v) =
+    liftIO $
+      manyFloatsXoshiro256PlusPlus count bufferPtr (castPtr (mutableByteArrayContents v))
+  vectorizedUniformRM (_, _) _ _ _ = error "non unit ranges are not yet supported"
 
 -- unsafeRotateL# :: Word# -> Int# -> Word#
 -- unsafeRotateL# w k = (uncheckedShiftL# w k) `or#` (uncheckedShiftRL# w (64# -# k))

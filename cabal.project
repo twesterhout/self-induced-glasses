@@ -15,9 +15,9 @@ package *
 --   ghc-options: -ffun-to-thunk -fno-full-laziness -fexpose-all-unfoldings -fspecialise-aggressively
 
 package self-induced-glasses
-  optimization: 0
+  optimization: 2
   profiling: true
-  -- ghc-options: -ffun-to-thunk -fno-full-laziness -fexpose-all-unfoldings -fspecialise-aggressively
+  ghc-options: -ffun-to-thunk -fno-full-laziness -fexpose-all-unfoldings -fspecialise-aggressively
   documentation: true
   haddock-html-location: https://hackage.haskell.org/package/$pkg-$version/docs
   haddock-hyperlink-source: true

@@ -1,19 +1,56 @@
+{-# LANGUAGE BinaryLiterals #-}
+{-# LANGUAGE OverloadedLists #-}
+
 module Main (main) where
 
+import Data.Bits (bit)
 import qualified Data.Vector.Generic as G
-import SelfInducedGlasses.Core
-import SelfInducedGlasses.Metropolis
+import qualified ListT
+import SelfInducedGlasses.Random
+import SelfInducedGlasses.Sampling
 import System.Random
+import Test.Hspec
 
 main :: IO ()
-main = do
-  putStrLn ("Test suite is not implemented" :: String)
-  let g = mkStdGen 42
-      simplify (Configuration v) = G.map ((\x -> (x + 1) `div` 2) . (round :: ℝ -> Int)) v
-      (x, g') = randomConfiguration 100 g
-  print (simplify x)
-  let y = packConfiguration x
-  print y
-  let z = unpackConfiguration 100 y
-  print (simplify z)
-  print (z == x)
+main = hspec $ do
+  describe "allConfigurations" $ do
+    it "builds all possible spin configurations" $ do
+      states <- ListT.toList $ allConfigurations 2
+      states
+        `shouldBe` fmap (Configuration 2 . G.singleton) [0, 1, 2, 3]
+  describe "ising2d" $ do
+    it "builds the Hamiltonian" $ do
+      let !h2 = ferromagneticIsingModelSquare2D 2 0.5
+      hMagneticField h2 `shouldBe` [0.5, 0.5, 0.5, 0.5]
+      hInteraction h2
+        `shouldBe` [ [0, -1, -1, 0],
+                     [-1, 0, 0, -1],
+                     [-1, 0, 0, -1],
+                     [0, -1, -1, 0]
+                   ]
+      let !h3 = ferromagneticIsingModelSquare2D 3 (-0.1)
+      hMagneticField h3 `shouldSatisfy` G.all (== (-0.1))
+      hInteraction h3
+        `shouldBe` [ [0, -1, -1, -1, 0, 0, -1, 0, 0],
+                     [-1, 0, -1, 0, -1, 0, 0, -1, 0],
+                     [-1, -1, 0, 0, 0, -1, 0, 0, -1],
+                     [-1, 0, 0, 0, -1, -1, -1, 0, 0],
+                     [0, -1, 0, -1, 0, -1, 0, -1, 0],
+                     [0, 0, -1, -1, -1, 0, 0, 0, -1],
+                     [-1, 0, 0, -1, 0, 0, 0, -1, -1],
+                     [0, -1, 0, 0, -1, 0, -1, 0, -1],
+                     [0, 0, -1, 0, 0, -1, -1, -1, 0]
+                   ]
+  describe "totalEnergy & totalMagnetization" $ do
+    it "correctly calculates total energy & magnetization" $ do
+      let !h₁ = ferromagneticIsingModelSquare2D 3 0
+      totalEnergy h₁ (Configuration 9 [0b100110011]) `shouldBe` 12
+      totalEnergy h₁ (Configuration 9 [0b000000111]) `shouldBe` (-12)
+      totalEnergy h₁ (Configuration 9 [0b110000001]) `shouldBe` 4
+  describe "randomConfigurationM" $ do
+    it "generates random bit strings" $ do
+      g <- mkXoshiro256PlusPlus 42
+      state <- randomConfigurationM 9 g
+      print state
+      state `shouldSatisfy` (\(Configuration 9 x) -> G.length x == 1)
+      state `shouldSatisfy` (\(Configuration 9 x) -> 0 < G.head x && G.head x < bit 9)

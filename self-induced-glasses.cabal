@@ -44,6 +44,7 @@ library
   import:              common-options
   hs-source-dirs:      src
   exposed-modules:     SelfInducedGlasses.Sampling
+                       SelfInducedGlasses.Random
                        -- SelfInducedGlasses
                        -- SelfInducedGlasses.Core
                        -- SelfInducedGlasses.Metropolis
@@ -51,8 +52,8 @@ library
                        -- SelfInducedGlasses.Interaction
                        -- SelfInducedGlasses.Random
   c-sources:           cbits/metropolis.c
+                       cbits/xoshiro256plusplus.c
   --                      cbits/helpers.c
-  --                      cbits/xoshiro256plusplus.c
   --                      third_party/kissfft-131.1.0/kiss_fft.c
   --                      third_party/kissfft-131.1.0/kfc.c
                        -- third_party/kissfft-131.1.0/kiss_fftnd.c
@@ -90,6 +91,23 @@ library
                      -- , co-log
   haddock-options:   --haddock-html-location='https://hackage.haskell.org/package/$pkg-$version/docs' --haddock-hyperlink-source
 
+executable ising2d
+  import:              common-options
+  hs-source-dirs:      app/ising2d
+  main-is:             Main.hs
+  build-depends:       self-induced-glasses
+                     , primitive
+                     , vector
+                     , random
+                     , mtl
+                     , text
+                     , list-t
+                     , foldl
+                     , optparse-applicative
+  ghc-options:         -threaded
+                       -rtsopts
+                       -with-rtsopts=-N
+
 -- executable self-induced-glasses
 --   buildable:           False
 --   import:              common-options
@@ -109,15 +127,17 @@ library
 --                        -rtsopts
 --                        -with-rtsopts=-N
 -- 
--- test-suite self-induced-glasses-test
---   buildable:           False
---   import:              common-options
---   type:                exitcode-stdio-1.0
---   hs-source-dirs:      test
---   main-is:             Spec.hs
---   build-depends:       self-induced-glasses
---                      , random
---                      , vector
---   ghc-options:         -threaded
---                        -rtsopts
---                        -with-rtsopts=-N
+test-suite self-induced-glasses-test
+  import:              common-options
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Spec.hs
+  build-depends:       self-induced-glasses
+                     , hspec
+                     , vector
+                     , list-t
+                     , foldl
+                     , random
+  ghc-options:         -threaded
+                       -rtsopts
+                       -with-rtsopts=-N
