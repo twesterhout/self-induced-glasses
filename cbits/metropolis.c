@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <x86/avx2.h>
 
 extern uint64_t xoshiro256plusplus_next(uint64_t s[4]);
 
@@ -67,6 +68,16 @@ static inline void flip_spin(uint64_t *const restrict x, HsInt const i) {
   x[i / 64] ^= ((uint64_t)1) << (i % 64);
 }
 
+static inline simde__m256 unpack_byte(uint8_t const bits) {
+  simde__m256i b1 = simde_mm256_set1_epi32((int32_t)bits); // broadcast bits
+  simde__m256i m2 = simde_mm256_setr_epi32(1, 2, 4, 8, 0x10, 0x20, 0x40, 0x80);
+  simde__m256i d1 =
+      simde_mm256_and_si256(b1, m2); // isolate one bit in each dword
+  simde__m256i mask = simde_mm256_cmpgt_epi32(
+      d1, simde_mm256_setzero_si256()); // compare with 0
+  return simde_mm256_castsi256_ps(mask);
+}
+
 static inline float
 packed_dot_product_scalar(HsInt const n, float const *const restrict a,
                           uint64_t const *const restrict b) {
@@ -87,6 +98,106 @@ float energy_change_upon_flip(HsInt const number_bits,
   float const h = (field != NULL) ? field[i] : 0.0f;
   float const s = read_spin(state, i);
   return -2 * (2 * overlap + h) * s;
+}
+
+static inline simde__m256 invert_mask(simde__m256 const mask,
+                                      simde__m256i const minus_one) {
+  return simde_mm256_castsi256_ps(
+      simde_mm256_xor_si256(simde_mm256_castps_si256(mask), minus_one));
+}
+
+static inline simde__m256 new_energy_change(simde__m256 const change,
+                                            simde__m256 const pre,
+                                            simde__m256 const coupling,
+                                            simde__m256 const mask,
+                                            simde__m256 const not_mask) {
+  return simde_mm256_add_ps(
+      change,
+      simde_mm256_mul_ps(
+          pre, simde_mm256_sub_ps(simde_mm256_and_ps(coupling, mask),
+                                  simde_mm256_and_ps(coupling, not_mask))));
+}
+
+static void recompute_energy_changes_upon_flip_simd(
+    HsInt const number_bits, float const *const restrict couplings,
+    uint64_t const *const restrict state, HsInt const i,
+    float *const restrict energy_changes) {
+
+  float const *const row = couplings + i * number_bits;
+  float const pre = -8 * read_spin(state, i);
+  simde__m256 const pre_v = simde_mm256_set1_ps(pre);
+  simde__m256i const minus_one_v = simde_mm256_set1_epi32(-1);
+  float const delta_energy = energy_changes[i];
+
+  int const num_blocks = number_bits / 64;
+  for (int block_idx = 0; block_idx < num_blocks; ++block_idx) {
+    uint64_t word = state[block_idx];
+    int offset = 64 * block_idx;
+
+    // clang-format off
+    simde__m256 const mask_v0 = unpack_byte(word & 0xFF);
+    simde__m256 const mask_v1 = unpack_byte((word >> 8) & 0xFF);
+    simde__m256 const mask_v2 = unpack_byte((word >> 16) & 0xFF);
+    simde__m256 const mask_v3 = unpack_byte((word >> 24) & 0xFF);
+    simde__m256 const mask_v4 = unpack_byte((word >> 32) & 0xFF);
+    simde__m256 const mask_v5 = unpack_byte((word >> 40) & 0xFF);
+    simde__m256 const mask_v6 = unpack_byte((word >> 48) & 0xFF);
+    simde__m256 const mask_v7 = unpack_byte((word >> 56) & 0xFF);
+
+    simde__m256 const not_mask_v0 = invert_mask(mask_v0, minus_one_v);
+    simde__m256 const not_mask_v1 = invert_mask(mask_v1, minus_one_v);
+    simde__m256 const not_mask_v2 = invert_mask(mask_v2, minus_one_v);
+    simde__m256 const not_mask_v3 = invert_mask(mask_v3, minus_one_v);
+    simde__m256 const not_mask_v4 = invert_mask(mask_v4, minus_one_v);
+    simde__m256 const not_mask_v5 = invert_mask(mask_v5, minus_one_v);
+    simde__m256 const not_mask_v6 = invert_mask(mask_v6, minus_one_v);
+    simde__m256 const not_mask_v7 = invert_mask(mask_v7, minus_one_v);
+
+    simde__m256 const coupling_v0 = simde_mm256_loadu_ps(row + offset + 8 * 0);
+    simde__m256 const coupling_v1 = simde_mm256_loadu_ps(row + offset + 8 * 1);
+    simde__m256 const coupling_v2 = simde_mm256_loadu_ps(row + offset + 8 * 2);
+    simde__m256 const coupling_v3 = simde_mm256_loadu_ps(row + offset + 8 * 3);
+    simde__m256 const coupling_v4 = simde_mm256_loadu_ps(row + offset + 8 * 4);
+    simde__m256 const coupling_v5 = simde_mm256_loadu_ps(row + offset + 8 * 5);
+    simde__m256 const coupling_v6 = simde_mm256_loadu_ps(row + offset + 8 * 6);
+    simde__m256 const coupling_v7 = simde_mm256_loadu_ps(row + offset + 8 * 7);
+
+    simde__m256 const change_v0 = simde_mm256_loadu_ps(energy_changes + offset + 8 * 0);
+    simde__m256 const change_v1 = simde_mm256_loadu_ps(energy_changes + offset + 8 * 1);
+    simde__m256 const change_v2 = simde_mm256_loadu_ps(energy_changes + offset + 8 * 2);
+    simde__m256 const change_v3 = simde_mm256_loadu_ps(energy_changes + offset + 8 * 3);
+    simde__m256 const change_v4 = simde_mm256_loadu_ps(energy_changes + offset + 8 * 4);
+    simde__m256 const change_v5 = simde_mm256_loadu_ps(energy_changes + offset + 8 * 5);
+    simde__m256 const change_v6 = simde_mm256_loadu_ps(energy_changes + offset + 8 * 6);
+    simde__m256 const change_v7 = simde_mm256_loadu_ps(energy_changes + offset + 8 * 7);
+
+    simde__m256 const new_change_v0 = new_energy_change(change_v0, pre_v, coupling_v0, mask_v0, not_mask_v0);
+    simde__m256 const new_change_v1 = new_energy_change(change_v1, pre_v, coupling_v1, mask_v1, not_mask_v1);
+    simde__m256 const new_change_v2 = new_energy_change(change_v2, pre_v, coupling_v2, mask_v2, not_mask_v2);
+    simde__m256 const new_change_v3 = new_energy_change(change_v3, pre_v, coupling_v3, mask_v3, not_mask_v3);
+    simde__m256 const new_change_v4 = new_energy_change(change_v4, pre_v, coupling_v4, mask_v4, not_mask_v4);
+    simde__m256 const new_change_v5 = new_energy_change(change_v5, pre_v, coupling_v5, mask_v5, not_mask_v5);
+    simde__m256 const new_change_v6 = new_energy_change(change_v6, pre_v, coupling_v6, mask_v6, not_mask_v6);
+    simde__m256 const new_change_v7 = new_energy_change(change_v7, pre_v, coupling_v7, mask_v7, not_mask_v7);
+
+    simde_mm256_storeu_ps(energy_changes + offset + 8 * 0, new_change_v0);
+    simde_mm256_storeu_ps(energy_changes + offset + 8 * 1, new_change_v1);
+    simde_mm256_storeu_ps(energy_changes + offset + 8 * 2, new_change_v2);
+    simde_mm256_storeu_ps(energy_changes + offset + 8 * 3, new_change_v3);
+    simde_mm256_storeu_ps(energy_changes + offset + 8 * 4, new_change_v4);
+    simde_mm256_storeu_ps(energy_changes + offset + 8 * 5, new_change_v5);
+    simde_mm256_storeu_ps(energy_changes + offset + 8 * 6, new_change_v6);
+    simde_mm256_storeu_ps(energy_changes + offset + 8 * 7, new_change_v7);
+    // clang-format on
+  }
+
+  for (int k = 64 * num_blocks; k < number_bits; ++k) {
+    float const coupling = couplings[i * number_bits + k];
+    float const sigma = read_spin(state, k);
+    energy_changes[k] += pre * coupling * sigma;
+  }
+
+  energy_changes[i] = -delta_energy;
 }
 
 static void recompute_energy_changes_upon_flip(
@@ -146,6 +257,12 @@ void add_spin_spin_correlation(HsInt const n,
   }
 }
 
+void add_magnetization(HsInt n, uint64_t const *state, float *out) {
+  for (HsInt i = 0; i < n; ++i) {
+    out[i] += read_spin(state, i);
+  }
+}
+
 double run_one_sweep(HsInt const number_bits, HsInt const number_steps,
                      float const beta, float const couplings[],
                      float const field[], HsInt const uniform_random_ints[],
@@ -167,8 +284,8 @@ double run_one_sweep(HsInt const number_bits, HsInt const number_steps,
     float const u = -logf(uniform_random_floats[step_index]) / beta;
     if (de < u) {
       flip_spin(state, i);
-      recompute_energy_changes_upon_flip(number_bits, couplings, state, i,
-                                         delta_energies);
+      recompute_energy_changes_upon_flip_simd(number_bits, couplings, state, i,
+                                              delta_energies);
       e += de;
       ++number_accepted;
     }

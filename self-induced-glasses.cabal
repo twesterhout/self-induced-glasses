@@ -70,6 +70,7 @@ library
   extra-libraries:     blas
                      -- , fftw3f
   build-depends:       vector
+                     , vector-stream
                      , text
                      , async
                      , deepseq
@@ -98,6 +99,7 @@ executable ising2d
   build-depends:       self-induced-glasses
                      , primitive
                      , vector
+                     , vector-stream
                      , random
                      , mtl
                      , text
