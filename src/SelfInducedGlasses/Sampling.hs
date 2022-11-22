@@ -19,6 +19,8 @@ module SelfInducedGlasses.Sampling
     DenseMatrix (..),
     Hamiltonian (..),
     ferromagneticIsingModelSquare2D,
+    randomIsingModel3D,
+    sherringtonKirkpatrickModel,
     Configuration (..),
     ConfigurationBatch (..),
     MutableConfiguration (..),
@@ -53,6 +55,7 @@ module SelfInducedGlasses.Sampling
     allConfigurations,
     randomConfigurationM,
     updateTemperatures,
+    betasGeometric,
   )
 where
 
@@ -95,6 +98,7 @@ import qualified ListT
 import SelfInducedGlasses.Random
 import System.IO
 import System.IO.Unsafe (unsafePerformIO)
+import qualified System.Random.MWC.Distributions as MWC
 import System.Random.Stateful
 import Text.PrettyPrint.ANSI.Leijen (Doc, Pretty (..))
 import qualified Text.PrettyPrint.ANSI.Leijen as Pretty
@@ -272,6 +276,19 @@ updateTemperatures ts stats = G.generate (G.length ts) getTemperature
                in t + δt * (target - s) / (factors ! i)
           where
             s' = s + (factors ! i)
+
+betasGeometric ::
+  -- | Number temperatures
+  Int ->
+  -- | Minimal temperature
+  Double ->
+  -- | Maximal temperature
+  Double ->
+  -- | βs
+  Vector ℝ
+betasGeometric n tₘᵢₙ tₘₐₓ = G.generate n (\i -> realToFrac $ 1 / (tₘᵢₙ * (rate ^ i)))
+  where
+    rate = (tₘₐₓ / tₘᵢₙ) ** ((1 :: Double) / fromIntegral (n - 1))
 
 data PiecewiseLinear = PiecewiseLinear [(ℝ, ℝ)]
 
@@ -724,7 +741,7 @@ randomConfigurationM n g
       | rest /= 0 && i == numWords - 1 =
           let mask = ((1 :: Word64) `unsafeShiftL` rest) - 1
            in (mask .&.) <$> uniformM g
-      | i < numWords - 1 = uniformM g
+      | i < numWords = uniformM g
 
 -- | Generate a random 'MetropolisState'.
 randomMetropolisStateM ::
@@ -900,6 +917,82 @@ ferromagneticIsingModelSquare2D n b = IsingLike interactionMatrix magneticField
           SM.write buf (i * numSpins + j) (-0.5)
           SM.write buf (j * numSpins + i) (-0.5)
       DenseMatrix numSpins numSpins <$> S.unsafeFreeze buf
+
+sherringtonKirkpatrickModel ::
+  HasCallStack =>
+  -- | Size of the system
+  Int ->
+  -- | Seed
+  Int ->
+  -- | The Hamiltonian
+  Hamiltonian
+sherringtonKirkpatrickModel n seed = IsingLike interactionMatrix magneticField
+  where
+    magneticField = G.replicate n 0
+    interactionMatrix = unsafePerformIO $ do
+      g <- mkXoshiro256PlusPlus seed
+      buf <- SM.new (n * n)
+      forM_ [0 .. n - 1] $ \i ->
+        forM_ [i + 1 .. n - 1] $ \j -> do
+          h <- realToFrac <$> MWC.standard g
+          SM.write buf (i * n + j) h
+          SM.write buf (j * n + i) h
+      DenseMatrix n n <$> S.unsafeFreeze buf
+
+shuffleVectorM :: (PrimMonad m, StatefulGen g m, GM.MVector v a) => v (PrimState m) a -> g -> m ()
+shuffleVectorM !v !g = go (GM.length v - 1)
+  where
+    swap !i !j = do
+      a <- GM.read v i
+      b <- GM.read v j
+      GM.write v i b
+      GM.write v j a
+    go !j
+      | j > 0 = do
+          swap j =<< uniformRM (0, j - 1) g
+          go (j - 1)
+      | otherwise = pure ()
+
+randomIsingModel3D ::
+  HasCallStack =>
+  -- | Side length of the lattice
+  Int ->
+  -- | Seed
+  Int ->
+  -- | The Hamiltonian
+  Hamiltonian
+randomIsingModel3D n seed = IsingLike interactionMatrix magneticField
+  where
+    numSpins = n * n * n
+    magneticField = G.replicate numSpins 0
+    indexToCoord !i =
+      let z = i `div` (n * n)
+          y = (i `mod` (n * n)) `div` n
+          x = (i `mod` (n * n)) `mod` n
+       in (x, y, z)
+    coordToIndex (!x, !y, !z) = z * n * n + y * n + x
+    interactionMatrix = unsafePerformIO $ do
+      g <- mkXoshiro256PlusPlus seed
+      -- couplings <- G.unsafeThaw $ U.generate (3 * numSpins) (\i -> fromIntegral $ 2 * (i `mod` 2) - 1)
+      -- shuffleVectorM couplings g
+      couplings <- U.replicateM (3 * numSpins) (realToFrac <$> MWC.standard g)
+
+      buf <- SM.new (numSpins * numSpins)
+      forM_ [0 .. numSpins - 1] $ \i -> do
+        let (x, y, z) = indexToCoord i
+            neighbors =
+              G.map coordToIndex $
+                B.fromList
+                  [ ((x + 1) `mod` n, y, z),
+                    (x, (y + 1) `mod` n, z),
+                    (x, y, (z + 1) `mod` n)
+                  ]
+        G.iforM_ neighbors $ \k j -> do
+          let h = couplings ! (3 * i + k)
+          GM.write buf (i * numSpins + j) h
+          GM.write buf (j * numSpins + i) h
+
+      DenseMatrix numSpins numSpins <$> G.unsafeFreeze buf
 
 allConfigurations :: MonadUnliftIO m => Int -> ListT m Configuration
 allConfigurations n

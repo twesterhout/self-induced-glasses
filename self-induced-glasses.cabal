@@ -78,7 +78,7 @@ library
                      , containers
                      , bytestring
                      , random >= 1.2
-                     -- , mwc-random
+                     , mwc-random
                      , primitive
                      , ghc-prim
                      , mtl
@@ -95,6 +95,42 @@ library
 executable ising2d
   import:              common-options
   hs-source-dirs:      app/ising2d
+  main-is:             Main.hs
+  build-depends:       self-induced-glasses
+                     , primitive
+                     , vector
+                     , vector-stream
+                     , random
+                     , mtl
+                     , text
+                     , list-t
+                     , foldl
+                     , optparse-applicative
+  ghc-options:         -threaded
+                       -rtsopts
+                       -with-rtsopts=-N
+
+executable random-ising-3d
+  import:              common-options
+  hs-source-dirs:      app/random-ising-3d
+  main-is:             Main.hs
+  build-depends:       self-induced-glasses
+                     , primitive
+                     , vector
+                     , vector-stream
+                     , random
+                     , mtl
+                     , text
+                     , list-t
+                     , foldl
+                     , optparse-applicative
+  ghc-options:         -threaded
+                       -rtsopts
+                       -with-rtsopts=-N
+
+executable sherrington-kirkpatrick
+  import:              common-options
+  hs-source-dirs:      app/sk
   main-is:             Main.hs
   build-depends:       self-induced-glasses
                      , primitive

@@ -241,6 +241,32 @@ HsInt total_magnetization(HsInt const n, uint64_t const *const restrict state) {
   return m;
 }
 
+void add_overlap(HsInt const n, uint64_t const *const restrict state1,
+                 uint64_t const *const restrict state2,
+                 float *const restrict out) {
+  for (HsInt i = 0; i < n; ++i) {
+    float const s1_i = read_spin(state1, i);
+    for (HsInt j = 0; j < n; ++j) {
+      float const s2_j = read_spin(state2, j);
+      out[i * n + j] += s1_i * s2_j;
+    }
+  }
+}
+
+void add_overlap_squared(HsInt const n, uint64_t const *const restrict state1,
+                         uint64_t const *const restrict state2,
+                         float *const restrict out) {
+  for (HsInt i = 0; i < n; ++i) {
+    float const s1_i = read_spin(state1, i);
+    float const s2_i = read_spin(state2, i);
+    for (HsInt j = i + 1; j < n; ++j) {
+      float const s1_j = read_spin(state1, j);
+      float const s2_j = read_spin(state2, j);
+      out[i * n + j] += s1_i * s1_j * s2_i * s2_j;
+    }
+  }
+}
+
 void add_spin_spin_correlation(HsInt const n,
                                uint64_t const *const restrict state,
                                float *const restrict out) {

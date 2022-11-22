@@ -15,6 +15,11 @@ HsInt total_magnetization(HsInt n, uint64_t const *state);
 void add_spin_spin_correlation(HsInt n, uint64_t const *state, float *out);
 void add_magnetization(HsInt n, uint64_t const *state, float *out);
 
+void add_overlap(HsInt n, uint64_t const *state1, uint64_t const *state2,
+                 float *out);
+void add_overlap_squared(HsInt n, uint64_t const *state1,
+                         uint64_t const *state2, float *out);
+
 double run_one_sweep(HsInt number_bits, HsInt number_steps, float beta,
                      float const couplings[], float const field[],
                      HsInt const uniform_random_ints[],
