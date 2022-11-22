@@ -23,30 +23,30 @@ main = hspec $ do
       let !h2 = ferromagneticIsingModelSquare2D 2 0.5
       hMagneticField h2 `shouldBe` [0.5, 0.5, 0.5, 0.5]
       hInteraction h2
-        `shouldBe` [ [0, -1, -1, 0],
-                     [-1, 0, 0, -1],
-                     [-1, 0, 0, -1],
-                     [0, -1, -1, 0]
+        `shouldBe` [ [0, -0.5, -0.5, 0],
+                     [-0.5, 0, 0, -0.5],
+                     [-0.5, 0, 0, -0.5],
+                     [0, -0.5, -0.5, 0]
                    ]
       let !h3 = ferromagneticIsingModelSquare2D 3 (-0.1)
       hMagneticField h3 `shouldSatisfy` G.all (== (-0.1))
       hInteraction h3
-        `shouldBe` [ [0, -1, -1, -1, 0, 0, -1, 0, 0],
-                     [-1, 0, -1, 0, -1, 0, 0, -1, 0],
-                     [-1, -1, 0, 0, 0, -1, 0, 0, -1],
-                     [-1, 0, 0, 0, -1, -1, -1, 0, 0],
-                     [0, -1, 0, -1, 0, -1, 0, -1, 0],
-                     [0, 0, -1, -1, -1, 0, 0, 0, -1],
-                     [-1, 0, 0, -1, 0, 0, 0, -1, -1],
-                     [0, -1, 0, 0, -1, 0, -1, 0, -1],
-                     [0, 0, -1, 0, 0, -1, -1, -1, 0]
+        `shouldBe` [ [0, -0.5, -0.5, -0.5, 0, 0, -0.5, 0, 0],
+                     [-0.5, 0, -0.5, 0, -0.5, 0, 0, -0.5, 0],
+                     [-0.5, -0.5, 0, 0, 0, -0.5, 0, 0, -0.5],
+                     [-0.5, 0, 0, 0, -0.5, -0.5, -0.5, 0, 0],
+                     [0, -0.5, 0, -0.5, 0, -0.5, 0, -0.5, 0],
+                     [0, 0, -0.5, -0.5, -0.5, 0, 0, 0, -0.5],
+                     [-0.5, 0, 0, -0.5, 0, 0, 0, -0.5, -0.5],
+                     [0, -0.5, 0, 0, -0.5, 0, -0.5, 0, -0.5],
+                     [0, 0, -0.5, 0, 0, -0.5, -0.5, -0.5, 0]
                    ]
   describe "totalEnergy & totalMagnetization" $ do
     it "correctly calculates total energy & magnetization" $ do
       let !h₁ = ferromagneticIsingModelSquare2D 3 0
-      totalEnergy h₁ (Configuration 9 [0b100110011]) `shouldBe` 12
-      totalEnergy h₁ (Configuration 9 [0b000000111]) `shouldBe` (-12)
-      totalEnergy h₁ (Configuration 9 [0b110000001]) `shouldBe` 4
+      totalEnergy h₁ (Configuration 9 [0b100110011]) `shouldBe` 6
+      totalEnergy h₁ (Configuration 9 [0b000000111]) `shouldBe` (-6)
+      totalEnergy h₁ (Configuration 9 [0b110000001]) `shouldBe` 2
   describe "randomConfigurationM" $ do
     it "generates random bit strings" $ do
       g <- mkXoshiro256PlusPlus 42
