@@ -33,11 +33,16 @@ module SelfInducedGlasses.Sampling
     ColorStats (..),
     indexConfiguration,
     totalEnergy,
+    replicaOverlap,
+    replicaOverlapSquared,
     totalMagnetization,
     energyFold,
+    overlapFold,
+    overlapSquaredFold,
     magnetizationFold,
     structureFactorFold,
     perSiteMagnetizationFold,
+    streamFoldM,
     fourierTransformStructureFactorSquare,
     monteCarloSampling',
     monteCarloSampling,
@@ -62,7 +67,7 @@ where
 import Control.DeepSeq
 import Control.Foldl (FoldM (..))
 import qualified Control.Foldl as Foldl
-import Control.Monad (forM, forM_, unless)
+import Control.Monad (forM, forM_, unless, (<=<))
 import Control.Monad.IO.Unlift
 import Control.Monad.Primitive
 import Control.Monad.ST.Strict (runST)
@@ -314,45 +319,87 @@ invertPiecewiseLinear (PiecewiseLinear points) = PiecewiseLinear $ fmap (\(x, y)
 --     go
 
 secondMomentFold ::
-  forall m a g.
-  (MonadUnliftIO m, Fractional a, U.Unbox a) =>
-  (ReplicaExchangeState g -> m a) ->
-  FoldM m (ObservableState g) (Vector (MeanVariance a))
-secondMomentFold f = Foldl.FoldM step begin extract
+  forall m a r.
+  (MonadUnliftIO m, Fractional a) =>
+  (r -> m a) ->
+  FoldM m r (MeanVariance a)
+secondMomentFold f = FoldM step begin extract
   where
-    begin :: m (Maybe (U.MVector RealWorld (Int, a, a)))
-    begin = pure Nothing
-    go !accs !state !i
-      | i < GM.length accs = do
-          y <- f (state.unObservableState ! i)
-          liftIO $ GM.modify accs (\acc -> updateVarianceAcc acc y) i
-          go accs state (i + 1)
-      | otherwise = pure ()
-    step !maybeAccs !state = do
-      accs <- case maybeAccs of
-        Just accs -> pure accs
-        Nothing -> liftIO $ GM.replicate (G.length state.unObservableState) (0, 0, 0)
-      go accs state 0 >> pure (Just accs)
-    extract !maybeAccs = do
-      case maybeAccs of
-        Just accs -> liftIO $ G.map extractMoments . G.convert <$> (G.unsafeFreeze accs)
-        Nothing -> pure G.empty
+    begin = pure (0, 0, 0)
+    step !acc !x = updateVarianceAcc acc <$> f x
+    extract = pure . extractMoments
+
+stackFolds ::
+  MonadUnliftIO m =>
+  Int ->
+  FoldM m a b ->
+  FoldM m (Vector a) (Vector b)
+stackFolds count (FoldM step begin extract) = FoldM step' begin' extract'
+  where
+    begin' = withRunInIO $ \u -> GM.replicateM count (u begin)
+    step' !accs !xs = withRunInIO $ \u -> do
+      GM.iforM_ accs $ \i acc ->
+        GM.write accs i =<< u (step acc (xs ! i))
+      pure accs
+    extract' !accs = G.mapM extract =<< liftIO (G.unsafeFreeze accs)
+
+pairFolds ::
+  Monad m =>
+  FoldM m a b ->
+  FoldM m c d ->
+  FoldM m (a, c) (b, d)
+pairFolds fold1 fold2 =
+  (,) <$> Foldl.premapM (pure . fst) fold1 <*> Foldl.premapM (pure . snd) fold2
 
 energyFold ::
-  forall m g.
   MonadUnliftIO m =>
+  Int ->
   FoldM m (ObservableState g) (Vector (MeanVariance Double))
-energyFold = secondMomentFold (liftIO . readIORef . energy . state)
+energyFold numReplicas =
+  Foldl.premapM (pure . unObservableState) $
+    stackFolds numReplicas $
+      secondMomentFold (\r -> liftIO $ readIORef r.state.energy)
 
 magnetizationFold ::
-  forall m g.
   MonadUnliftIO m =>
+  Int ->
   FoldM m (ObservableState g) (Vector (MeanVariance Double))
-magnetizationFold = secondMomentFold compute
+magnetizationFold numReplicas =
+  Foldl.premapM (pure . unObservableState) $
+    stackFolds numReplicas $
+      secondMomentFold compute
   where
-    compute !state = do
-      x <- unsafeFreezeConfiguration state.state.configuration
-      pure (fromIntegral $ totalMagnetization x)
+    compute !r =
+      (fromIntegral . totalMagnetization)
+        <$> unsafeFreezeConfiguration r.state.configuration
+
+genericOverlapFold ::
+  MonadUnliftIO m =>
+  (Configuration -> Configuration -> Double) ->
+  Int ->
+  FoldM m (ObservableState g, ObservableState g) (Vector (MeanVariance Double))
+genericOverlapFold f numReplicas =
+  Foldl.premapM preprocess $
+    stackFolds numReplicas $
+      secondMomentFold compute
+  where
+    preprocess (a, b) = pure $ G.zip (unObservableState a) (unObservableState b)
+    compute !(r1, r2) =
+      f
+        <$> unsafeFreezeConfiguration r1.state.configuration
+        <*> unsafeFreezeConfiguration r2.state.configuration
+
+overlapFold ::
+  MonadUnliftIO m =>
+  Int ->
+  FoldM m (ObservableState g, ObservableState g) (Vector (MeanVariance Double))
+overlapFold = genericOverlapFold replicaOverlap
+
+overlapSquaredFold ::
+  MonadUnliftIO m =>
+  Int ->
+  FoldM m (ObservableState g, ObservableState g) (Vector (MeanVariance Double))
+overlapSquaredFold = genericOverlapFold replicaOverlapSquared
 
 perSiteMagnetizationFold ::
   forall m a g.
@@ -795,6 +842,26 @@ totalMagnetization state@(Configuration n _) =
       \statePtr ->
         pure $ c_totalMagnetization n statePtr
 
+replicaOverlap :: HasCallStack => Configuration -> Configuration -> Double
+replicaOverlap state1@(Configuration n _) state2@(Configuration n' _)
+  | n == n' =
+      unsafePerformIO $!
+        withConfiguration state1 $ \statePtr1 ->
+          withConfiguration state2 $ \statePtr2 ->
+            pure $ (/ fromIntegral n) . realToFrac $ c_replicaOverlap n statePtr1 statePtr2
+  | otherwise = error $ "spin configurations have incompatible length: " <> show n <> " != " <> show n'
+
+replicaOverlapSquared :: HasCallStack => Configuration -> Configuration -> Double
+replicaOverlapSquared state1@(Configuration n _) state2@(Configuration n' _)
+  | n == n' =
+      unsafePerformIO $!
+        withConfiguration state1 $ \statePtr1 ->
+          withConfiguration state2 $ \statePtr2 ->
+            pure $
+              (/ fromIntegral (n * n)) . realToFrac $
+                c_replicaOverlapSquared n statePtr1 statePtr2
+  | otherwise = error $ "spin configurations have incompatible length: " <> show n <> " != " <> show n'
+
 -- | Compute a vector of @ΔE@ that one would get by flipping each spin.
 energyChanges :: Hamiltonian -> Configuration -> S.Vector ℝ
 energyChanges hamiltonian state@(Configuration n _) =
@@ -1179,6 +1246,12 @@ foreign import ccall unsafe "metropolis.h total_energy"
 
 foreign import ccall unsafe "metropolis.h total_magnetization"
   c_totalMagnetization :: Int -> Ptr Word64 -> Int
+
+foreign import ccall unsafe "metropolis.h replica_overlap"
+  c_replicaOverlap :: Int -> Ptr Word64 -> Ptr Word64 -> Float
+
+foreign import ccall unsafe "metropolis.h replica_overlap_squared"
+  c_replicaOverlapSquared :: Int -> Ptr Word64 -> Ptr Word64 -> Float
 
 foreign import ccall unsafe "metropolis.h add_spin_spin_correlation"
   c_addSpinSpinCorrelation :: Int -> Ptr Word64 -> Ptr Float -> IO ()
