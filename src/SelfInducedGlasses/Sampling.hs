@@ -245,12 +245,14 @@ instance Semigroup ColorStats where
 instance Monoid ColorStats where
   mempty = ColorStats 0 0
 
-updateColorStats :: ColorStats -> Maybe ReplicaColor -> ColorStats
-updateColorStats (ColorStats numBlue numRed) c =
-  case c of
-    Just ReplicaBlue -> ColorStats (numBlue + 1) numRed
-    Just ReplicaRed -> ColorStats numBlue (numRed + 1)
-    Nothing -> ColorStats numBlue numRed
+updateColorStats :: ReplicaExchangeState g -> ReplicaExchangeState g
+updateColorStats g = g {hist = hist'}
+  where
+    (ColorStats numBlue numRed) = g.hist
+    hist' = case g.color of
+      Just ReplicaBlue -> ColorStats (numBlue + 1) numRed
+      Just ReplicaRed -> ColorStats numBlue (numRed + 1)
+      Nothing -> ColorStats numBlue numRed
 {-# INLINE updateColorStats #-}
 
 updateTemperatures :: Vector ℝ -> Vector ColorStats -> Vector ℝ
@@ -589,8 +591,8 @@ maybeExchangeReplicas
       then
         let -- We swap the spin configurations only, leaving the βs and random number generators
             -- unchanged.
-            !r1' = r1 {state = s2, color = c2, hist = updateColorStats r1.hist c2}
-            !r2' = r2 {state = s1, color = c1, hist = updateColorStats r2.hist c1}
+            !r1' = r1 {state = s2, color = c2}
+            !r2' = r2 {state = s1, color = c1}
          in pure (r1', r2', True)
       else pure (r1, r2, False)
 {-# INLINE maybeExchangeReplicas #-}
@@ -642,8 +644,8 @@ runReplicaExchangeSchedule sweepSize schedule₀ states₀ = do
           state2 <- wait future2
           -- TODO: how to update the colors
           (state1', state2', _) <- maybeExchangeReplicas state1 state2 u
-          acc1' <- flip spawn intervals1 $ maybeUpdateColor n i state1'
-          acc2' <- flip spawn intervals2 $ maybeUpdateColor n (i + 1) state2'
+          acc1' <- flip spawn intervals1 $ updateColorStats $ maybeUpdateColor n i state1'
+          acc2' <- flip spawn intervals2 $ updateColorStats $ maybeUpdateColor n (i + 1) state2'
           pure $ accumulators G.// [(i, acc1'), (i + 1, acc2')]
       | otherwise = do
           let (future1, intervals1) = accumulators ! i
