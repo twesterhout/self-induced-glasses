@@ -42,6 +42,8 @@ module SelfInducedGlasses.Sampling
     magnetizationFold,
     structureFactorFold,
     perSiteMagnetizationFold,
+    pairFolds,
+    stackFolds,
     streamFoldM,
     fourierTransformStructureFactorSquare,
     monteCarloSampling',
@@ -370,7 +372,7 @@ magnetizationFold numReplicas =
       secondMomentFold compute
   where
     compute !r =
-      (fromIntegral . totalMagnetization)
+      (fromIntegral . abs . totalMagnetization)
         <$> unsafeFreezeConfiguration r.state.configuration
 
 genericOverlapFold ::
@@ -393,7 +395,7 @@ overlapFold ::
   MonadUnliftIO m =>
   Int ->
   FoldM m (ObservableState g, ObservableState g) (Vector (MeanVariance Double))
-overlapFold = genericOverlapFold replicaOverlap
+overlapFold = genericOverlapFold (\a b -> abs $ replicaOverlap a b)
 
 overlapSquaredFold ::
   MonadUnliftIO m =>
