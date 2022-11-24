@@ -1,14 +1,47 @@
+{ enableStatic ? false,
+  enableProfiling ? false
+}:
 let
-  nixpkgs = import (import nix/sources.nix { }).nixpkgs { };
-  # hp = nixpkgs.pkgsStatic.haskell.compiler.ghc924 { };
+  pkgs = import (import nix/sources.nix { }).nixpkgs { };
   # hp = nixpkgs.pkgsStatic.haskellPackages.ghc9_2_4;
-  # hp = nixpkgs.pkgsStatic.haskell.packages.ghc924;
-  hp = nixpkgs.pkgsStatic.haskell.packages.native-bignum.ghc924;
-  #   overrides = self: super: {
-  #     vty = (super.vty.override {
-  #       terminfo = super.terminfo_0_4_1_5;
-  #     });
-  #   };
-  # };
+  hpRaw = if enableStatic then pkgs.pkgsStatic.haskell.packages.native-bignum.ghc924
+                          else pkgs.haskell.packages.ghc924;
+
+  cabal2nixOptions = "" + (pkgs.lib.optionalString enableProfiling "--enable-profiling");
+  cabalOptions = "--ghc-options=-fexpose-all-unfoldings -fspecialise-aggressively";
+  
+  hp = hpRaw.override {
+    overrides = self: super: {
+      unliftio = super.unliftio.overrideAttrs (oldAttrs: {
+        configureFlags = oldAttrs.configureFlags ++ [ cabalOptions ];
+      });
+      vector = super.vector.overrideAttrs (oldAttrs: {
+        configureFlags = oldAttrs.configureFlags ++ [ cabalOptions ];
+      });
+      primitive = super.primitive.overrideAttrs (oldAttrs: {
+        configureFlags = oldAttrs.configureFlags ++ [ cabalOptions ];
+      });
+    };
+  };
+
+  self-induced-glasses = 
+    (hp.callCabal2nixWithOptions "self-induced-glasses" ./. cabal2nixOptions {}).overrideAttrs (oldAttrs: {
+      configureFlags = oldAttrs.configureFlags ++ [ cabalOptions ];
+    });
+
+  projectShell = hp.shellFor {
+    packages = p: [ self-induced-glasses ];
+    buildInputs = [ hp.cabal-install ];
+  };
 in
-hp.callCabal2nix "random-ising-3d" ./. { }
+  if pkgs.lib.inNixShell then projectShell else self-induced-glasses
+  # hp.callCabal2nixWithOptions "self-induced-glasses" (./.) "--shell" { }
+  # hp.developPackage {
+  #   root = ./.;
+  #   name = "self-induced-glasses";
+  #   withHoogle = false;
+  #   modifier = drv:
+  #     nixpkgs.pkgsStatic.haskell.lib.addBuildTools drv [
+  #       hp.cabal-install
+  #     ];
+  # }
