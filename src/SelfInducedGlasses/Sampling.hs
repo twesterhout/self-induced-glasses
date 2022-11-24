@@ -57,7 +57,7 @@ module SelfInducedGlasses.Sampling
     mkSchedule,
     withVector,
     withMutableConfiguration,
-    doSweep,
+    -- doSweep,
     doManySweeps,
     allConfigurations,
     randomConfigurationM,
@@ -78,6 +78,7 @@ import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Builder.RealFloat as Builder
 import Data.IORef
 import qualified Data.List
+import Data.Primitive.ByteArray (mutableByteArrayContents)
 import qualified Data.Primitive.Ptr as Ptr
 import Data.Stream.Monadic (Step (..), Stream (..))
 import qualified Data.Stream.Monadic as Stream
@@ -112,6 +113,7 @@ import qualified Text.PrettyPrint.ANSI.Leijen as Pretty
 import UnliftIO.Async
 import UnliftIO.Exception (assert)
 import qualified UnliftIO.Foreign as UnliftIO
+import qualified UnliftIO.IORef as UnliftIO
 
 -- | Real number
 type ℝ = Float
@@ -185,7 +187,7 @@ data MetropolisState = MetropolisState
 -- | General information about the sampling that is gathered during a sweep.
 --
 -- 'SweepStats' obtained from multiple sweeps can be combined using the 'Monoid' instance.
-data SweepStats = SweepStats {ssTime :: !Int, ssAcceptProb :: !Double}
+data SweepStats = SweepStats {ssTime :: {-# UNPACK #-} !Int, ssAcceptProb :: {-# UNPACK #-} !Double}
   deriving stock (Show, Generic)
   deriving anyclass (NFData)
 
@@ -648,7 +650,7 @@ maybeExchangeReplicas
 
 runReplicaExchangeSchedule ::
   forall g m.
-  (MonadUnliftIO m, NFData g, VectorizedUniformRange g m Int, VectorizedUniformRange g m Float) =>
+  (MonadUnliftIO m, g ~ Xoshiro256PlusPlus (PrimState m)) =>
   Int ->
   ReplicaExchangeSchedule ->
   B.Vector (ReplicaExchangeState g) ->
@@ -1111,6 +1113,7 @@ withMutableVector (S.MVector _ fp) action = do
 
 withDenseMatrix :: (MonadUnliftIO m, Storable a) => DenseMatrix S.Vector a -> (Ptr a -> m b) -> m b
 withDenseMatrix (DenseMatrix _ _ v) = withVector v
+{-# INLINE withDenseMatrix #-}
 
 withConfiguration ::
   MonadUnliftIO m =>
@@ -1118,6 +1121,7 @@ withConfiguration ::
   (Ptr Word64 -> m a) ->
   m a
 withConfiguration (Configuration _ v) = withVector v
+{-# INLINE withConfiguration #-}
 
 withMutableConfiguration ::
   MonadUnliftIO m =>
@@ -1133,78 +1137,87 @@ withMutableConfiguration (MutableConfiguration _ (S.MVector _ fp)) action = do
 instance Semigroup SweepStats where
   (<>) (SweepStats t1 r1) (SweepStats t2 r2) = SweepStats t (s / fromIntegral t)
     where
-      t = t1 + t2
-      s = fromIntegral t1 * r1 + fromIntegral t2 * r2
+      !t = t1 + t2
+      !s = fromIntegral t1 * r1 + fromIntegral t2 * r2
+  {-# INLINE (<>) #-}
 
 instance Monoid SweepStats where
   mempty = SweepStats 0 0
+  {-# INLINE mempty #-}
 
-doSweep ::
+-- doSweep ::
+--   MonadUnliftIO m =>
+--   ProbDist ->
+--   Int ->
+--   Ptr Int ->
+--   Ptr ℝ ->
+--   MetropolisState ->
+--   m SweepStats
+-- doSweep (ProbDist β hamiltonian) !numberSteps !randIntsPtr !randFloatsPtr !state = do
+--   -- liftIO $ putStrLn "Calling doSweep..."
+--   let !numberBits = G.length (hMagneticField hamiltonian)
+--   withDenseMatrix (hInteraction hamiltonian) $ \couplingsPtr ->
+--     withVector (hMagneticField hamiltonian) $ \fieldPtr ->
+--       withMutableConfiguration state.configuration $ \statePtr ->
+--         withMutableVector state.deltaEnergies $ \deltaEnergiesPtr ->
+--           liftIO $ do
+--             -- x <- unsafeFreezeConfiguration state.configuration
+--             -- putStrLn $ "Starting sweep from " <> show x
+--             -- print =<< peek statePtr
+--             e₀ <- readIORef state.energy
+--             with e₀ $ \energyPtr -> do
+--               acceptance <-
+--                 {-# SCC c_runOneSweep #-}
+--                 c_runOneSweep
+--                   numberBits
+--                   numberSteps
+--                   β
+--                   couplingsPtr
+--                   randIntsPtr
+--                   randFloatsPtr
+--                   statePtr
+--                   energyPtr
+--                   deltaEnergiesPtr
+--               !e <- peek energyPtr
+--               writeIORef state.energy e
+--               -- !e' <- totalEnergy hamiltonian <$> unsafeFreezeConfiguration state.configuration
+--               -- print acceptance
+--               -- assert (e == e') $
+--               pure $ SweepStats numberSteps acceptance
+-- {-# INLINE doSweep #-}
+
+doManySweeps ::
   MonadUnliftIO m =>
   ProbDist ->
   Int ->
-  Ptr Int ->
-  Ptr ℝ ->
-  MetropolisState ->
-  m SweepStats
-doSweep (ProbDist β hamiltonian) !numberSteps !randIntsPtr !randFloatsPtr !state = do
-  -- liftIO $ putStrLn "Calling doSweep..."
-  let !numberBits = G.length (hMagneticField hamiltonian)
-  withDenseMatrix (hInteraction hamiltonian) $ \couplingsPtr ->
-    withVector (hMagneticField hamiltonian) $ \fieldPtr ->
-      withMutableConfiguration state.configuration $ \statePtr ->
-        withMutableVector state.deltaEnergies $ \deltaEnergiesPtr ->
-          liftIO $ do
-            x <- unsafeFreezeConfiguration state.configuration
-            -- putStrLn $ "Starting sweep from " <> show x
-            -- print =<< peek statePtr
-            e₀ <- readIORef state.energy
-            with e₀ $ \energyPtr -> do
-              acceptance <-
-                {-# SCC c_runOneSweep #-}
-                c_runOneSweep
-                  numberBits
-                  numberSteps
-                  β
-                  couplingsPtr
-                  fieldPtr
-                  randIntsPtr
-                  randFloatsPtr
-                  statePtr
-                  energyPtr
-                  deltaEnergiesPtr
-              !e <- peek energyPtr
-              writeIORef state.energy e
-              -- !e' <- totalEnergy hamiltonian <$> unsafeFreezeConfiguration state.configuration
-              -- print acceptance
-              -- assert (e == e') $
-              pure $ SweepStats numberSteps acceptance
-
-doManySweeps ::
-  forall g m.
-  (MonadUnliftIO m, VectorizedUniformRange g m Float, VectorizedUniformRange g m Int) =>
-  ProbDist ->
-  Int ->
   Int ->
   MetropolisState ->
-  g ->
+  Xoshiro256PlusPlus (PrimState m) ->
   m SweepStats
-doManySweeps probDist numberSweeps sweepSize state g = do
-  randInts <- {-# SCC allocRandInts #-} liftIO $ GM.unsafeNew sweepSize
-  randFloats <- {-# SCC allocRandFloats #-} liftIO $ GM.unsafeNew sweepSize
-  let !numberSpins = G.length . hMagneticField . pdHamiltonian $ probDist
-      go :: SweepStats -> Int -> m SweepStats
-      go !stats !i
-        | i < numberSweeps = do
-            stats' <-
-              withMutableVector randInts $ \randIntsPtr ->
-                withMutableVector randFloats $ \randFloatsPtr -> do
-                  {-# SCC fillRandInts #-} vectorizedUniformRM (0, numberSpins) sweepSize randIntsPtr g
-                  {-# SCC fillRandFloats #-} vectorizedUniformRM (0, 1) sweepSize randFloatsPtr g
-                  doSweep probDist sweepSize randIntsPtr randFloatsPtr state
-            go (stats <> stats') (i + 1)
-        | otherwise = pure stats
-  go mempty 0
+doManySweeps (ProbDist β hamiltonian) numberSweeps sweepSize state (Xoshiro256PlusPlus g) = do
+  let numberSpins = G.length hamiltonian.hMagneticField
+      totalSteps = numberSweeps * sweepSize
+      gPtr = castPtr (mutableByteArrayContents g)
+  withDenseMatrix hamiltonian.hInteraction $ \couplingsPtr ->
+    withMutableConfiguration state.configuration $ \statePtr ->
+      withMutableVector state.deltaEnergies $ \deltaEnergiesPtr -> do
+        e₀ <- UnliftIO.readIORef state.energy
+        UnliftIO.with e₀ $ \energyPtr -> do
+          !acceptance <-
+            liftIO $
+              {-# SCC c_runOneSweep #-}
+              c_runOneSweep
+                numberSpins
+                totalSteps
+                β
+                couplingsPtr
+                statePtr
+                deltaEnergiesPtr
+                gPtr
+                energyPtr
+          !e <- liftIO $ peek energyPtr
+          UnliftIO.writeIORef state.energy e
+          pure $ SweepStats totalSteps acceptance
 
 -- | Clone a spin configuration into a mutable one
 thawConfiguration :: MonadUnliftIO m => Configuration -> m MutableConfiguration
@@ -1262,4 +1275,4 @@ foreign import ccall unsafe "metropolis.h add_magnetization"
   c_addMagnetization :: Int -> Ptr Word64 -> Ptr Float -> IO ()
 
 foreign import ccall unsafe "metropolis.h run_one_sweep"
-  c_runOneSweep :: Int -> Int -> Float -> Ptr Float -> Ptr Float -> Ptr Int -> Ptr Float -> Ptr Word64 -> Ptr Double -> Ptr Float -> IO Double
+  c_runOneSweep :: Int -> Int -> Float -> Ptr Float -> Ptr Word64 -> Ptr Float -> Ptr Word64 -> Ptr Double -> IO Double

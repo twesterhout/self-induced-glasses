@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <x86/avx2.h>
 
+#if !defined(__AVX2__)
+#error "WTF?"
+#endif
+
 extern uint64_t xoshiro256plusplus_next(uint64_t s[4]);
 
 static inline uint64_t
@@ -292,15 +296,27 @@ void add_magnetization(HsInt n, uint64_t const *state, float *out) {
 
 double run_one_sweep(HsInt const number_bits, HsInt const number_steps,
                      float const beta, float const couplings[],
-                     float const field[], HsInt const uniform_random_ints[],
-                     float const uniform_random_floats[], uint64_t state[],
-                     double *current_energy, float delta_energies[]) {
-  (void)field;
+                     uint64_t state[], float delta_energies[],
+                     uint64_t xoshiro256plusplus_state[4],
+                     double *current_energy) {
   HsInt number_accepted = 0;
   double e = *current_energy;
 
+  int const block_size = 64;
+  HsInt uniform_random_ints[block_size];
+  float uniform_random_floats[block_size];
+
   for (HsInt step_index = 0; step_index < number_steps; ++step_index) {
-    HsInt const i = uniform_random_ints[step_index];
+    int const rand_index = step_index % block_size;
+    if (rand_index == 0) {
+      xoshiro256plusplus_many_HsInt(block_size, number_bits,
+                                    uniform_random_ints,
+                                    xoshiro256plusplus_state);
+      xoshiro256plusplus_many_float(block_size, uniform_random_floats,
+                                    xoshiro256plusplus_state);
+    }
+
+    HsInt const i = uniform_random_ints[rand_index];
     float const de = delta_energies[i];
     // float const de_ref =
     //     energy_change_upon_flip(number_bits, couplings, field, state, i);
@@ -308,7 +324,7 @@ double run_one_sweep(HsInt const number_bits, HsInt const number_steps,
     //   fprintf(stderr, "de (%f) != de_ref (%f) for i=%li\n", de, de_ref, i);
     //   abort();
     // }
-    float const u = -logf(uniform_random_floats[step_index]) / beta;
+    float const u = -logf(uniform_random_floats[rand_index]) / beta;
     if (de < u) {
       flip_spin(state, i);
       recompute_energy_changes_upon_flip_simd(number_bits, couplings, state, i,

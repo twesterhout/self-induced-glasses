@@ -20,6 +20,11 @@ source-repository head
   type:                git
   location:            https://github.com/twesterhout/self-induced-glasses.git
 
+flag no-avx2
+  description: Do not use AVX2
+  manual: True
+  default: False
+
 common common-options
   build-depends:       base >= 4.12 && < 5
   ghc-options:         -Wall
@@ -59,15 +64,17 @@ library
                        -- third_party/kissfft-131.1.0/kiss_fftnd.c
                        -- third_party/kissfft-131.1.0/kiss_fftndr.c
                        -- third_party/kissfft-131.1.0/kiss_fftr.c
-  cc-options:          -Wall -Wextra -pedantic
-                       -O3 -ffast-math -march=native -DNDEBUG
-                       -DUSE_KAHAN=1 -DCHECK_CORRECTNESS=0 -DUSE_FFTW=0
-                       -Dkiss_fft_scalar=float -DKISS_FFT_USE_ALLOCA=0
+  cc-options:          -Wall -Wextra -pedantic -O3 -ffast-math -fPIC -DNDEBUG
+  if !flag(no-avx2)
+    cc-options:        -msse -msse2 -msse3 -mssse3 -msse4.1 -msse4.2 -mavx -mavx2 -mtune=znver1
+                       -- -DUSE_KAHAN=1 -DCHECK_CORRECTNESS=0 -DUSE_FFTW=0
+                       -- -Dkiss_fft_scalar=float -DKISS_FFT_USE_ALLOCA=0
   include-dirs:        cbits
                      , third_party/simde-amalgamated-0.7.2
                      , third_party/kissfft-131.1.0
   -- extra-lib-dirs:      /usr/lib/x86_64-linux-gnu/openblas-openmp
-  -- extra-libraries:     blas
+  extra-libraries:     m rt
+                     -- blas
                      -- , fftw3f
   build-depends:       vector
                      , vector-stream
@@ -90,10 +97,11 @@ library
                      , unliftio
                      , ansi-wl-pprint
                      -- , co-log
-  haddock-options:   --haddock-html-location='https://hackage.haskell.org/package/$pkg-$version/docs' --haddock-hyperlink-source
+--  haddock-options:   --haddock-html-location='https://hackage.haskell.org/package/$pkg-$version/docs' --haddock-hyperlink-source
 
 executable ising2d
   import:              common-options
+  buildable:           False
   hs-source-dirs:      app/ising2d
   main-is:             Main.hs
   build-depends:       self-induced-glasses
@@ -130,6 +138,7 @@ executable random-ising-3d
 
 executable sherrington-kirkpatrick
   import:              common-options
+  buildable:           False
   hs-source-dirs:      app/sk
   main-is:             Main.hs
   build-depends:       self-induced-glasses

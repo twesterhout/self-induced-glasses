@@ -20,10 +20,10 @@ float replica_overlap_squared(HsInt n, uint64_t const *state1,
                               uint64_t const *state2);
 
 double run_one_sweep(HsInt number_bits, HsInt number_steps, float beta,
-                     float const couplings[], float const field[],
-                     HsInt const uniform_random_ints[],
-                     float const uniform_random_floats[], uint64_t state[],
-                     double *current_energy, float delta_energies[]);
+                     float const couplings[], uint64_t state[],
+                     float delta_energies[],
+                     uint64_t xoshiro256plusplus_state[4],
+                     double *current_energy);
 
 void xoshiro256plusplus_many_HsInt(HsInt count, HsInt upper, HsInt buffer[],
                                    uint64_t xoshiro256plusplus_state[4]);

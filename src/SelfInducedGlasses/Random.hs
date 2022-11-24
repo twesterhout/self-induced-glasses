@@ -5,7 +5,7 @@
 {-# LANGUAGE UnboxedTuples #-}
 
 module SelfInducedGlasses.Random
-  ( Xoshiro256PlusPlus,
+  ( Xoshiro256PlusPlus (..),
     Xoshiro256PlusPlusState,
     mkXoshiro256PlusPlus,
     splitForParallel,
