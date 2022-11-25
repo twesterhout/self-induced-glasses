@@ -721,10 +721,10 @@ runReplicaExchangeSchedule sweepSize schedule₀ states₀ = do
     --   m (Async (ReplicaExchangeState g), [(Int, Int)])
     spawn !replica@(ReplicaExchangeState probDist _ _ _ _ g) !intervals =
       case intervals of
-        ((!start, !end) : others) -> do
-          !future <- async $ do
-            !stats' <- doManySweeps probDist (end - start) sweepSize replica.state g
-            pure . force $ replica {stats = replica.stats <> stats'}
+        ((start, end) : others) -> do
+          future <- async $ do
+            stats' <- doManySweeps probDist (end - start) sweepSize replica.state g
+            pure $ replica {stats = replica.stats <> stats'}
           pure (future, others)
         [] -> do
           !future <- async $ pure replica
@@ -740,8 +740,7 @@ runReplicaExchangeSchedule sweepSize schedule₀ states₀ = do
           let n = G.length accumulators
               (future1, intervals1) = accumulators ! i
               (future2, intervals2) = accumulators ! (i + 1)
-          state1 <- wait future1
-          state2 <- wait future2
+          (state1, state2) <- waitBoth future1 future2
           -- TODO: how to update the colors
           (state1', state2', _) <- maybeExchangeReplicas state1 state2 u
           acc1' <- flip spawn intervals1 $ updateColorStats $ maybeUpdateColor n i state1'
