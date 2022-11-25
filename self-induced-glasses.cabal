@@ -89,6 +89,7 @@ library
                      , primitive
                      , ghc-prim
                      , mtl
+                     , strict
                      -- , MemoTrie
                      -- , hdf5-hs
                      , foldl

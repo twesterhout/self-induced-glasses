@@ -29,9 +29,14 @@ let
       configureFlags = oldAttrs.configureFlags ++ [ cabalOptions ];
     });
 
+  pythonEnv = pkgs.python3.withPackages(ps: [ ps.numpy ps.scipy ]);
+
   projectShell = hp.shellFor {
     packages = p: [ self-induced-glasses ];
-    buildInputs = [ hp.cabal-install ];
+    buildInputs = [
+      hp.cabal-install
+      pythonEnv
+    ];
   };
 in
   if pkgs.lib.inNixShell then projectShell else self-induced-glasses
