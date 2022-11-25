@@ -1048,7 +1048,7 @@ randomIsingModel3D n seed = IsingLike interactionMatrix magneticField
       g <- mkXoshiro256PlusPlus seed
       -- couplings <- G.unsafeThaw $ U.generate (3 * numSpins) (\i -> fromIntegral $ 2 * (i `mod` 2) - 1)
       -- shuffleVectorM couplings g
-      couplings <- U.replicateM (3 * numSpins) (realToFrac <$> MWC.standard g)
+      couplings <- U.replicateM (3 * numSpins) (realToFrac . (/ 2) <$> MWC.standard g)
 
       buf <- SM.new (numSpins * numSpins)
       forM_ [0 .. numSpins - 1] $ \i -> do
