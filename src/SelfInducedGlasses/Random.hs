@@ -7,6 +7,7 @@
 module SelfInducedGlasses.Random
   ( Xoshiro256PlusPlus (..),
     Xoshiro256PlusPlusState,
+    JumpType (..),
     mkXoshiro256PlusPlus,
     splitForParallel,
     VectorizedUniformRange (..),
@@ -37,6 +38,10 @@ newtype Xoshiro256PlusPlusState = Xoshiro256PlusPlusState ByteArray
   deriving stock (Show, Generic)
   deriving anyclass (NFData)
 
+data JumpType = ShortJump | LongJump
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (NFData)
+
 mkXoshiro256PlusPlus :: PrimMonad m => Int -> m (Xoshiro256PlusPlus (PrimState m))
 mkXoshiro256PlusPlus seed = do
   let g0 = mkStdGen seed
@@ -56,6 +61,9 @@ foreign import ccall unsafe "xoshiro256plusplus_next"
 
 foreign import ccall unsafe "xoshiro256plusplus_jump"
   jumpXoshiro256PlusPlus :: Ptr Word64 -> IO ()
+
+foreign import ccall unsafe "xoshiro256plusplus_long_jump"
+  longJumpXoshiro256PlusPlus :: Ptr Word64 -> IO ()
 
 foreign import ccall unsafe "xoshiro256plusplus_many_HsInt"
   manyIntsXoshiro256PlusPlus :: Int -> Int -> Ptr Int -> Ptr Word64 -> IO ()
@@ -122,23 +130,25 @@ next (Xoshiro256PlusPlus v) =
 --   (# s1, r #) -> (# s1, (W64# r) #)
 {-# SCC next #-}
 
-jump :: PrimMonad m => Xoshiro256PlusPlus (PrimState m) -> m ()
-jump (Xoshiro256PlusPlus v) =
-  unsafeIOToPrim $
-    jumpXoshiro256PlusPlus (castPtr (mutableByteArrayContents v))
+jump :: PrimMonad m => JumpType -> Xoshiro256PlusPlus (PrimState m) -> m ()
+jump jumpType (Xoshiro256PlusPlus v) = unsafeIOToPrim $ f (castPtr (mutableByteArrayContents v))
+  where
+    f = case jumpType of
+      ShortJump -> jumpXoshiro256PlusPlus
+      LongJump -> longJumpXoshiro256PlusPlus
 -- primitive $ \s0 ->
 -- case nextImpl# v s0 of
 --   (# s1, r #) -> (# s1, (W64# r) #)
 {-# SCC jump #-}
 
-jump' :: Xoshiro256PlusPlusState -> Xoshiro256PlusPlusState
-jump' (Xoshiro256PlusPlusState v) = runST $ do
+jump' :: JumpType -> Xoshiro256PlusPlusState -> Xoshiro256PlusPlusState
+jump' jumpType (Xoshiro256PlusPlusState v) = runST $ do
   v' <- thawByteArray v 0 (sizeofByteArray v)
-  jump (Xoshiro256PlusPlus v')
+  jump jumpType (Xoshiro256PlusPlus v')
   Xoshiro256PlusPlusState <$> unsafeFreezeByteArray v'
 
-splitForParallel :: Int -> Xoshiro256PlusPlusState -> B.Vector Xoshiro256PlusPlusState
-splitForParallel n s₀ = G.iterateN n jump' s₀
+splitForParallel :: JumpType -> Int -> Xoshiro256PlusPlusState -> B.Vector Xoshiro256PlusPlusState
+splitForParallel j n s₀ = G.iterateN n (jump' j) s₀
 
 class (StatefulGen g m, MonadUnliftIO m) => VectorizedUniformRange g m a where
   vectorizedUniformRM :: (a, a) -> Int -> Ptr a -> g -> m ()

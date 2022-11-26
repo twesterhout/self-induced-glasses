@@ -88,7 +88,7 @@ run settings = do
   -- ts' <- go 0 (G.map (\β -> 1 / β) βs)
   let ts' = ts
 
-  [g1, g2] <- G.mapM thawGen =<< (splitForParallel 2 <$> freezeGen g)
+  [g1, g2] <- G.mapM thawGen =<< (splitForParallel LongJump 2 <$> freezeGen g)
   -- g1 <- mkXoshiro256PlusPlus (settings.seed + 1)
   -- g2 <- mkXoshiro256PlusPlus (settings.seed + 2)
 

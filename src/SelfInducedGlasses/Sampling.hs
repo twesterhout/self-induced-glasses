@@ -985,7 +985,7 @@ monteCarloSampling sweepSize numberSweeps hamiltonian βs gₘₐᵢₙ =
     !numReplicas = G.length βs
     initUnfoldState = do
       gₘₐᵢₙ' <- freezeGen gₘₐᵢₙ
-      let gs = splitForParallel (G.length βs) gₘₐᵢₙ'
+      let gs = splitForParallel ShortJump (G.length βs) gₘₐᵢₙ'
       (gs' :: B.Vector (Xoshiro256PlusPlus (PrimState m))) <- G.mapM thawGen gs
       ObservableState
         <$> G.zipWithM (\β g -> randomReplicaExchangeStateM hamiltonian β g) βs gs'
