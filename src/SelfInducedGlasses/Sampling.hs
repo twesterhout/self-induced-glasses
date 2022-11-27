@@ -71,20 +71,24 @@ module SelfInducedGlasses.Sampling
   )
 where
 
+-- import qualified Data.ByteString.Builder.RealFloat as Builder
+
+import Control.Concurrent (MVar)
 import Control.DeepSeq
 import Control.Foldl (FoldM (..))
 import qualified Control.Foldl as Foldl
-import Control.Monad (forM_, unless)
+import Control.Monad (forM_, unless, when)
 import Control.Monad.IO.Unlift
 import Control.Monad.Primitive
 import Control.Monad.ST.Strict (runST)
+-- import Control.Scheduler
 import Data.Bits
 import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as Builder
--- import qualified Data.ByteString.Builder.RealFloat as Builder
 import Data.IORef
 import qualified Data.List
 import Data.Primitive.ByteArray (mutableByteArrayContents)
+import Data.Primitive.PVar
 -- import qualified Data.Primitive.Ptr as Ptr
 import Data.Stream.Monadic (Step (..), Stream (..))
 import qualified Data.Stream.Monadic as Stream
@@ -113,12 +117,15 @@ import qualified ListT
 import SelfInducedGlasses.Random
 import System.IO
 import System.IO.Unsafe (unsafePerformIO)
+import System.Mem.Weak (deRefWeak)
 import qualified System.Random.MWC.Distributions as MWC
 import System.Random.Stateful
 import Text.PrettyPrint.ANSI.Leijen (Doc, Pretty (..))
 import qualified Text.PrettyPrint.ANSI.Leijen as Pretty
 import UnliftIO.Async
 -- import UnliftIO.Exception (assert)
+
+import qualified UnliftIO.Concurrent as UnliftIO
 import qualified UnliftIO.Foreign as UnliftIO
 import qualified UnliftIO.IORef as UnliftIO
 
@@ -209,6 +216,23 @@ data ReplicaExchangeSchedule = ReplicaExchangeSchedule
   }
   deriving stock (Show, Generic)
   deriving anyclass (NFData)
+
+data SweepTask
+  = SweepTask
+      {-# UNPACK #-} !Int
+      -- ^ replica index
+      {-# UNPACK #-} !Int
+      -- ^ start time
+      {-# UNPACK #-} !Int
+      -- ^ stop time
+  | SwapTask
+      {-# UNPACK #-} !(Pair Int Int)
+      -- ^ replica indices
+      {-# UNPACK #-} !Int
+      -- ^ time point
+      {-# UNPACK #-} !ℝ
+      -- ^ uniform random number
+  deriving stock (Show, Generic, Eq)
 
 data ReplicaColor = ReplicaBlue | ReplicaRed
   deriving stock (Eq, Show, Generic)
@@ -699,7 +723,7 @@ maybeExchangeReplicas
 
 runReplicaExchangeSchedule ::
   forall g m.
-  (MonadUnliftIO m, g ~ Xoshiro256PlusPlus (PrimState m)) =>
+  (MonadUnliftIO m, PrimMonad m, g ~ Xoshiro256PlusPlus (PrimState m)) =>
   Int ->
   ReplicaExchangeSchedule ->
   B.Vector (ReplicaExchangeState g) ->
@@ -707,6 +731,7 @@ runReplicaExchangeSchedule ::
 runReplicaExchangeSchedule sweepSize schedule₀ states₀ = do
   -- liftIO $ do
   --   putStrLn "Running schedule ..."
+  --   print schedule₀
   --   Pretty.putDoc $ pretty schedule₀
   --   putStrLn ""
   -- liftIO $ print (resSwaps schedule₀)
@@ -724,6 +749,7 @@ runReplicaExchangeSchedule sweepSize schedule₀ states₀ = do
         ((start, end) : others) -> do
           future <- async $ do
             stats' <- doManySweeps probDist (end - start) sweepSize replica.state g
+            -- liftIO . putStrLn $ "Result of (" <> show probDist.pdBeta <> "): " <> show stats'
             pure $ replica {stats = replica.stats <> stats'}
           pure (future, others)
         [] -> do
@@ -759,6 +785,200 @@ runReplicaExchangeSchedule sweepSize schedule₀ states₀ = do
         unless (null intervals) $ error "not all intervals have been processed"
         wait future
 {-# SCC runReplicaExchangeSchedule #-}
+
+initSweepTaskInputOutputs ::
+  MonadUnliftIO m =>
+  Vector (ReplicaExchangeState g) ->
+  m (Vector (MVar (ReplicaExchangeState g)))
+initSweepTaskInputOutputs rs = G.mapM UnliftIO.newMVar rs
+
+scheduleToSweepTasks :: ReplicaExchangeSchedule -> [SweepTask]
+scheduleToSweepTasks schedule =
+  Data.List.sort $
+    G.toList (sweepTasks G.++ swapTasks)
+  where
+    mkTasksOneReplica i intervals =
+      G.fromList $
+        fmap (\(start, stop) -> SweepTask i start stop) intervals
+    sweepTasks = G.concat . G.toList $ G.imap mkTasksOneReplica schedule.resIntervals
+    swapTasks = G.imap (\t (i, u) -> SwapTask (i :!: i + 1) (t + 1) u) schedule.resSwaps
+
+instance Ord SweepTask where
+  compare (SweepTask _ start1 stop1) (SweepTask _ start2 stop2) =
+    compare (start1, stop1) (start2, stop2)
+  compare (SwapTask _ t1 _) (SwapTask _ t2 _) = compare t1 t2
+  compare (SweepTask _ start1 _) (SwapTask _ t2 _)
+    | start1 < t2 = LT
+    | otherwise = GT
+  compare x@(SwapTask _ _ _) y@(SweepTask _ _ _) =
+    case compare y x of
+      LT -> GT
+      EQ -> EQ
+      GT -> LT
+
+runSweepTasks ::
+  forall g m.
+  (MonadUnliftIO m, PrimMonad m, g ~ Xoshiro256PlusPlus (PrimState m)) =>
+  Int ->
+  Vector (ReplicaExchangeState g) ->
+  [SweepTask] ->
+  m (Vector (ReplicaExchangeState g))
+runSweepTasks sweepSize replicas₀ tasks = do
+  -- liftIO . putStrLn $ "==== runSweepTasks ===="
+  -- liftIO . print $ tasks
+  -- inputOutputs <- initSweepTaskInputOutputs replicas₀
+  let n = G.length replicas₀
+  -- capabilityRef <- UnliftIO.newEmptyMVar
+  -- currentNumThreads <- UnliftIO.newMVar 0
+  maxNumThreads <- min n <$> UnliftIO.getNumCapabilities
+  -- nextTask <- UnliftIO.newMVar ()
+  numThreads <- newPVar (0 :: Int)
+
+  let -- spawnNextThread capability task@(SweepTask i start stop) = do
+      --   replica <- UnliftIO.takeMVar (inputOutputs ! i)
+      --   -- (UnliftIO.mkWeakThreadId =<<) $
+      --   -- liftIO . putStrLn $ "Scheduling (" <> show task <> ") on " <> show capability
+      --   -- UnliftIO.forkOn capability $ do
+      --   UnliftIO.forkIO $ do
+      --     !sweepStats <-
+      --       doManySweeps
+      --         replica.prob
+      --         (stop - start)
+      --         sweepSize
+      --         replica.state
+      --         replica.gen
+      --     -- liftIO . putStrLn $ "Result of (" <> show task <> ", " <> show replica.prob.pdBeta <> "): " <> show sweepStats
+      --     UnliftIO.putMVar (inputOutputs ! i) $
+      --       replica {stats = replica.stats <> sweepStats}
+      --     UnliftIO.putMVar capabilityRef capability
+
+      -- go ::
+      --   Vector (Either (ReplicaExchangeState g) (Async (ReplicaExchangeState g))) ->
+      --   [SweepTask] ->
+      --   m (Vector (ReplicaExchangeState g))
+      go !rs [] = do
+        -- liftIO . putStrLn $ "====== waiting for all tasks to complete ====="
+        -- forM_ [0 .. min maxNumThreads numThreads - 1] $ \_ -> do
+        --   liftIO . putStrLn $ "* takeMVar"
+        --   UnliftIO.takeMVar nextTask
+        rs' <- G.freeze rs
+        G.forM rs' $ \x -> case x of
+          Left r -> pure r
+          Right f -> wait f
+      -- forM_ [0 .. (min numThreads maxNumThreads) - 1] $ \_ -> do
+      --   _ <- UnliftIO.takeMVar capabilityRef
+      --   pure ()
+      -- forM_ tids UnliftIO.killThread
+      -- forM_ tids $ \weakThreadId -> do
+      --   liftIO (deRefWeak weakThreadId) >>= maybe (pure ()) UnliftIO.killThread
+      go !rs (task@(SwapTask (i :!: j) _ u) : otherTasks) = do
+        -- liftIO . putStrLn $ "SwapTask: waiting for " <> show i <> " and " <> show j
+        r1 <-
+          GM.read rs i >>= \x -> case x of
+            Right f -> wait f
+            Left r -> error $ "in " <> show task
+        r2 <-
+          GM.read rs i >>= \x -> case x of
+            Right f -> wait f
+            Left r -> error $ "in " <> show task
+
+        -- liftIO . putStrLn $ "SwapTask: running the swap of " <> show i <> " and " <> show j
+        (r1', r2', _) <- maybeExchangeReplicas r1 r2 u
+        let r1'' = updateColorStats $ maybeUpdateColor n i r1'
+            r2'' = updateColorStats $ maybeUpdateColor n j r2'
+
+        -- liftIO . putStrLn $ "SwapTask: donw with swap of " <> show i <> " and " <> show j
+        GM.write rs i (Left r1'')
+        GM.write rs j (Left r2'')
+        go rs otherTasks
+      -- go (rs G.// [(i, Left r1''), (j, Left r2'')]) otherTasks
+      go !rs (task@(SweepTask i start stop) : otherTasks) = do
+        let waitForTasks = do
+              k <- atomicReadIntPVar numThreads
+              if k >= maxNumThreads
+                then UnliftIO.threadDelay 1000 >> waitForTasks
+                else atomicAddIntPVar numThreads 1 >> pure ()
+        waitForTasks
+        -- numThreads <- UnliftIO.takeMVar currentNumThreads
+        -- if numThreads >= maxNumThreads
+        --   then do
+        --     UnliftIO.putMVar currentNumThreads numThreads
+        --     UnliftIO.threadDelay 1000
+        --     go rs (task : otherTasks)
+        --   else do
+        -- UnliftIO.putMVar currentNumThreads (numThreads + 1)
+        -- liftIO . putStrLn $ "SweepTask checking futures[" <> show i <> "] for duplicates"
+        x <- GM.read rs i
+        let (Left replica) = x
+        -- liftIO . putStrLn $ "SweepTask spawning a task on " <> show i
+        f <- async $ do
+          -- liftIO . putStrLn $ "doManySweeps on " <> show i
+          sweepStats <-
+            doManySweeps
+              replica.prob
+              (stop - start)
+              sweepSize
+              replica.state
+              replica.gen
+          -- liftIO . putStrLn $ "doManySweeps done on " <> show i
+          let !r' = replica {stats = replica.stats <> sweepStats}
+          -- numThreads <- UnliftIO.takeMVar currentNumThreads
+          -- UnliftIO.putMVar currentNumThreads (numThreads - 1)
+          -- liftIO . putStrLn $ "putMVar"
+          -- UnliftIO.putMVar nextTask ()
+          atomicSubIntPVar numThreads 1
+          pure r'
+        -- liftIO . putStrLn $ "SweepTask is done on " <> show i
+        GM.write rs i (Right f)
+        -- go (rs G.// [(i, Right f)]) otherTasks
+        -- atomicAddIntPVar numThreads 1
+        go rs otherTasks
+
+  rs <- G.thaw $ G.map Left replicas₀
+  go rs tasks
+-- liftIO . putStrLn $ "====== waiting for all tasks to complete ====="
+-- G.generateM n $ \i -> do
+--   maybeReplica <- UnliftIO.tryTakeMVar (replicas ! i)
+--   case maybeReplica of
+--     Just r -> pure r
+--     Nothing -> do
+--       UnliftIO.takeMVar (futures ! i)
+-- G.mapM UnliftIO.takeMVar inputOutputs
+-- liftIO . putStrLn $ "returning replicas"
+-- G.freeze replicas
+{-# SCC runSweepTasks #-}
+
+runReplicaExchangeSchedule' ::
+  (MonadUnliftIO m, PrimMonad m, g ~ Xoshiro256PlusPlus (PrimState m)) =>
+  Int ->
+  ReplicaExchangeSchedule ->
+  Vector (ReplicaExchangeState g) ->
+  m (Vector (ReplicaExchangeState g))
+runReplicaExchangeSchedule' sweepSize schedule states = do
+  -- liftIO $ print schedule
+  -- liftIO $ do
+  --   putStrLn "Running schedule ..."
+  --   print schedule
+  --   Pretty.putDoc $ pretty schedule
+  --   putStrLn ""
+  runSweepTasks sweepSize states (scheduleToSweepTasks schedule)
+
+-- data SweepTask
+--   = SweepTask
+--       { replicaIdx :: {-# UNPACK #-} !Int,
+--         startTime :: {-# UNPACK #-} !Int,
+--         stopTime :: {-# UNPACK #-} !Int
+--       }
+--   | SwapTask
+--       { replicaIdices :: {-# UNPACK #-} !(Pair Int Int),
+--         timePoint :: {-# UNPACK #-} !Int
+--       }
+-- data ReplicaExchangeSchedule = ReplicaExchangeSchedule
+--   { resIntervals :: !(B.Vector [(Int, Int)]),
+--     resSwaps :: !(B.Vector (Int, ℝ))
+--   }
+--   deriving stock (Show, Generic)
+--   deriving anyclass (NFData)
 
 -- 🡼 🡽 🡾 🡿
 -- "╸╺"
@@ -800,7 +1020,7 @@ instance Pretty ReplicaExchangeSchedule where
   pretty = prettySchedule
 
 mkIntervals :: G.Vector v (Int, ℝ) => v (Int, ℝ) -> Int -> [(Int, Int)]
-mkIntervals swaps replicaIdx = go [(0, G.length swaps)] (G.length swaps - 2)
+mkIntervals swaps replicaIdx = go [(0, G.length swaps)] (G.length swaps - 1)
   where
     go acc@((!start, !end) : rest) !i
       | i <= 0 = acc
@@ -991,7 +1211,7 @@ monteCarloSampling sweepSize numberSweeps hamiltonian βs gₘₐᵢₙ =
         <$> G.zipWithM (\β g -> randomReplicaExchangeStateM hamiltonian β g) βs gs'
     unfoldStep (ObservableState replicas) = do
       !schedule <- randomReplicaExchangeScheduleM numReplicas numberSweeps gₘₐᵢₙ
-      !replicas' <- ObservableState <$> runReplicaExchangeSchedule sweepSize schedule replicas
+      !replicas' <- ObservableState <$> runReplicaExchangeSchedule' sweepSize schedule replicas
       pure replicas'
 
 {-
@@ -1233,14 +1453,17 @@ instance Monoid SweepStats where
 -- {-# INLINE doSweep #-}
 
 doManySweeps ::
-  MonadUnliftIO m =>
+  (PrimMonad m, MonadUnliftIO m) =>
   ProbDist ->
   Int ->
   Int ->
   MetropolisState ->
   Xoshiro256PlusPlus (PrimState m) ->
   m SweepStats
-doManySweeps (ProbDist β hamiltonian) numberSweeps sweepSize s (Xoshiro256PlusPlus g) = do
+doManySweeps (ProbDist β hamiltonian) numberSweeps sweepSize s gen@(Xoshiro256PlusPlus g) = do
+  -- k <- unsafeFreezeConfiguration s.configuration
+  -- g' <- freezeGen gen
+  -- liftIO . putStrLn $ "doManySweeps " <> show (β, numberSweeps, sweepSize, k, g')
   let numberSpins = G.length hamiltonian.hMagneticField
       totalSteps = numberSweeps * sweepSize
       gPtr = castPtr (mutableByteArrayContents g)
@@ -1250,17 +1473,20 @@ doManySweeps (ProbDist β hamiltonian) numberSweeps sweepSize s (Xoshiro256PlusP
         e₀ <- UnliftIO.readIORef s.energy
         UnliftIO.with e₀ $ \energyPtr -> do
           !acceptance <-
-            liftIO $
-              {-# SCC c_runOneSweep #-}
-              c_runOneSweep
-                numberSpins
-                totalSteps
-                β
-                couplingsPtr
-                statePtr
-                deltaEnergiesPtr
-                gPtr
-                energyPtr
+            liftIO $ do
+              r <-
+                {-# SCC c_runOneSweep #-}
+                c_runOneSweep
+                  numberSpins
+                  totalSteps
+                  β
+                  couplingsPtr
+                  statePtr
+                  deltaEnergiesPtr
+                  gPtr
+                  energyPtr
+              touch g
+              pure r
           !e <- liftIO $ peek energyPtr
           UnliftIO.writeIORef s.energy e
           pure $ SweepStats totalSteps acceptance

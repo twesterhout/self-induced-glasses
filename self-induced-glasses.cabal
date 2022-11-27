@@ -90,6 +90,7 @@ library
                      , ghc-prim
                      , mtl
                      , strict
+                     , pvar
                      -- , MemoTrie
                      -- , hdf5-hs
                      , foldl
