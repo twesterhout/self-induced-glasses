@@ -831,8 +831,8 @@ runSweepTasks sweepSize replicas₀ tasks = do
   -- capabilityRef <- UnliftIO.newEmptyMVar
   -- currentNumThreads <- UnliftIO.newMVar 0
   maxNumThreads <- min n <$> UnliftIO.getNumCapabilities
-  -- nextTask <- UnliftIO.newMVar ()
-  numThreads <- newPVar (0 :: Int)
+  -- numThreads <- newPVar (0 :: Int)
+  -- nextTask <- UnliftIO.newEmptyMVar
 
   let -- spawnNextThread capability task@(SweepTask i start stop) = do
       --   replica <- UnliftIO.takeMVar (inputOutputs ! i)
@@ -884,8 +884,8 @@ runSweepTasks sweepSize replicas₀ tasks = do
 
         -- liftIO . putStrLn $ "SwapTask: running the swap of " <> show i <> " and " <> show j
         (r1', r2', _) <- maybeExchangeReplicas r1 r2 u
-        let r1'' = updateColorStats $ maybeUpdateColor n i r1'
-            r2'' = updateColorStats $ maybeUpdateColor n j r2'
+        let !r1'' = updateColorStats $ maybeUpdateColor n i r1'
+            !r2'' = updateColorStats $ maybeUpdateColor n j r2'
 
         -- liftIO . putStrLn $ "SwapTask: donw with swap of " <> show i <> " and " <> show j
         GM.write rs i (Left r1'')
@@ -893,12 +893,14 @@ runSweepTasks sweepSize replicas₀ tasks = do
         go rs otherTasks
       -- go (rs G.// [(i, Left r1''), (j, Left r2'')]) otherTasks
       go !rs (task@(SweepTask i start stop) : otherTasks) = do
-        let waitForTasks = do
-              k <- atomicReadIntPVar numThreads
-              if k >= maxNumThreads
-                then UnliftIO.threadDelay 1000 >> waitForTasks
-                else atomicAddIntPVar numThreads 1 >> pure ()
-        waitForTasks
+        -- let waitForTasks !t = do
+        --       k <- atomicReadIntPVar numThreads
+        --       if k >= maxNumThreads
+        --         then UnliftIO.threadDelay (if t < 10 then 100 else 1000) >> waitForTasks (t + 1)
+        --         else atomicAddIntPVar numThreads 1 >> pure ()
+        -- {-# SCC waitForTasks #-} waitForTasks 0
+        -- oldNumThreads <- atomicAddIntPVar numThreads 1
+        -- when (oldNumThreads == maxNumThreads + 1) $ UnliftIO.takeMVar nextTask
         -- numThreads <- UnliftIO.takeMVar currentNumThreads
         -- if numThreads >= maxNumThreads
         --   then do
@@ -911,7 +913,7 @@ runSweepTasks sweepSize replicas₀ tasks = do
         x <- GM.read rs i
         let (Left replica) = x
         -- liftIO . putStrLn $ "SweepTask spawning a task on " <> show i
-        f <- async $ do
+        !f <- asyncOn (i `mod` maxNumThreads) $ do
           -- liftIO . putStrLn $ "doManySweeps on " <> show i
           sweepStats <-
             doManySweeps
@@ -926,7 +928,10 @@ runSweepTasks sweepSize replicas₀ tasks = do
           -- UnliftIO.putMVar currentNumThreads (numThreads - 1)
           -- liftIO . putStrLn $ "putMVar"
           -- UnliftIO.putMVar nextTask ()
-          atomicSubIntPVar numThreads 1
+          -- oldNumThreads' <- atomicSubIntPVar numThreads 1
+          -- when (oldNumThreads' <= maxNumThreads) $ do
+          --   _ <- UnliftIO.tryPutMVar nextTask ()
+          --   pure ()
           pure r'
         -- liftIO . putStrLn $ "SweepTask is done on " <> show i
         GM.write rs i (Right f)
@@ -1211,7 +1216,7 @@ monteCarloSampling sweepSize numberSweeps hamiltonian βs gₘₐᵢₙ =
         <$> G.zipWithM (\β g -> randomReplicaExchangeStateM hamiltonian β g) βs gs'
     unfoldStep (ObservableState replicas) = do
       !schedule <- randomReplicaExchangeScheduleM numReplicas numberSweeps gₘₐᵢₙ
-      !replicas' <- ObservableState <$> runReplicaExchangeSchedule' sweepSize schedule replicas
+      !replicas' <- ObservableState <$> runReplicaExchangeSchedule sweepSize schedule replicas
       pure replicas'
 
 {-

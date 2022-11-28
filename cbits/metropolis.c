@@ -4,10 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <x86/avx2.h>
-
-#if !defined(__AVX2__)
-#error "WTF?"
-#endif
+#include <time.h>
 
 extern uint64_t xoshiro256plusplus_next(uint64_t s[4]);
 
@@ -299,6 +296,9 @@ double run_one_sweep(HsInt const number_bits, HsInt const number_steps,
                      uint64_t state[], float delta_energies[],
                      uint64_t xoshiro256plusplus_state[4],
                      double *current_energy) {
+  // struct timespec tp1;
+  // clock_gettime(CLOCK_MONOTONIC, &tp1);
+
   HsInt number_accepted = 0;
   double e = *current_energy;
 
@@ -335,5 +335,12 @@ double run_one_sweep(HsInt const number_bits, HsInt const number_steps,
   }
 
   *current_energy = e;
+
+  // struct timespec tp2;
+  // clock_gettime(CLOCK_MONOTONIC, &tp2);
+
+  // fprintf(stderr, "run_one_sweep(number_steps=%zi, beta=%f) took %f\n",
+  //         number_steps, (double)beta,
+  //         (tp2.tv_sec - tp1.tv_sec) + (double)(tp2.tv_nsec - tp1.tv_nsec) / 1e9);
   return (double)number_accepted / (double)number_steps;
 }
