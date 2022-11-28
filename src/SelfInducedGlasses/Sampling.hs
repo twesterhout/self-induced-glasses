@@ -1035,6 +1035,15 @@ mkIntervals swaps replicaIdx = go [(0, G.length swaps)] (G.length swaps - 1)
       | otherwise = go acc (i - 1)
     go _ _ = error "this should never happen by construction"
 
+mkIntervals' :: G.Vector v (Pair Int ℝ) => v (Pair Int ℝ) -> Int -> [Pair Int Int]
+mkIntervals' swaps replicaIdx = go 0 (G.toList relevantSwaps)
+  where
+    go !s ((t, i :!: _) : others) = let !t' = t + 1 in (s :!: t') : go t' others
+    go !s [] = [(s :!: G.length swaps + 1)]
+    relevantSwaps =
+      G.filter (\(_, i :!: _) -> i == replicaIdx || i + 1 == replicaIdx) $
+        G.indexed swaps
+
 mkSchedule :: G.Vector v (Int, ℝ) => Int -> v (Int, ℝ) -> ReplicaExchangeSchedule
 mkSchedule numReplicas swaps =
   ReplicaExchangeSchedule
