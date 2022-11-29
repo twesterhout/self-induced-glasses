@@ -57,23 +57,24 @@ library
                        -- SelfInducedGlasses.Interaction
                        -- SelfInducedGlasses.Random
   c-sources:           cbits/metropolis.c
+                       cbits/fft.c
                        cbits/xoshiro256plusplus.c
   --                      cbits/helpers.c
-  --                      third_party/kissfft-131.1.0/kiss_fft.c
-  --                      third_party/kissfft-131.1.0/kfc.c
+                       third_party/kissfft-131.1.0/kiss_fft.c
+                       third_party/kissfft-131.1.0/kfc.c
                        -- third_party/kissfft-131.1.0/kiss_fftnd.c
                        -- third_party/kissfft-131.1.0/kiss_fftndr.c
                        -- third_party/kissfft-131.1.0/kiss_fftr.c
   cc-options:          -Wall -Wextra -pedantic -O3 -ffast-math -fPIC -DNDEBUG
   if !flag(no-avx2)
     cc-options:        -msse -msse2 -msse3 -mssse3 -msse4.1 -msse4.2 -mavx -mavx2 -mtune=znver1
+                       -Dkiss_fft_scalar=float -DKISS_FFT_USE_ALLOCA=0
                        -- -DUSE_KAHAN=1 -DCHECK_CORRECTNESS=0 -DUSE_FFTW=0
-                       -- -Dkiss_fft_scalar=float -DKISS_FFT_USE_ALLOCA=0
   include-dirs:        cbits
                      , third_party/simde-amalgamated-0.7.2
                      , third_party/kissfft-131.1.0
   -- extra-lib-dirs:      /usr/lib/x86_64-linux-gnu/openblas-openmp
-  extra-libraries:     m rt
+  -- extra-libraries:     m rt
                      -- blas
                      -- , fftw3f
   build-depends:       vector
@@ -134,6 +135,21 @@ executable random-ising-3d
                      , list-t
                      , foldl
                      , optparse-applicative
+  ghc-options:         -threaded
+                       -rtsopts
+                       -with-rtsopts=-N
+
+executable rkky-couplings
+  import:              common-options
+  hs-source-dirs:      app/rkky-couplings
+  main-is:             Main.hs
+  build-depends:       self-induced-glasses
+                     , optparse-applicative
+                     , text
+                     , vector
+                     , bytestring
+                     , strict
+                     , unliftio
   ghc-options:         -threaded
                        -rtsopts
                        -with-rtsopts=-N

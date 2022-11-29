@@ -1,4 +1,4 @@
-{-# LANGUAGE CApiFFI #-}
+-- {-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -21,6 +21,8 @@ module SelfInducedGlasses.Sampling
     ferromagneticIsingModelSquare2D,
     randomIsingModel3D,
     sherringtonKirkpatrickModel,
+    resummedRkkyInteraction,
+    kolmusRkkyModel,
     Configuration (..),
     ConfigurationBatch (..),
     MutableConfiguration (..),
@@ -45,6 +47,8 @@ module SelfInducedGlasses.Sampling
     pairFolds,
     stackFolds,
     streamFoldM,
+    autocorrelation,
+    autocorrTime,
     fourierTransformStructureFactorSquare,
     monteCarloSampling',
     monteCarloSampling,
@@ -71,66 +75,55 @@ module SelfInducedGlasses.Sampling
   )
 where
 
--- import qualified Data.ByteString.Builder.RealFloat as Builder
-
-import Control.Concurrent (MVar)
 import Control.DeepSeq
 import Control.Foldl (FoldM (..))
 import qualified Control.Foldl as Foldl
-import Control.Monad (forM_, unless, when)
+import Control.Monad (forM_, unless)
 import Control.Monad.IO.Unlift
 import Control.Monad.Primitive
-import Control.Monad.ST.Strict (runST)
--- import Control.Scheduler
 import Data.Bits
 import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as Builder
-import Data.IORef
+import Data.Complex
 import qualified Data.List
 import Data.Primitive.ByteArray (mutableByteArrayContents)
 import Data.Primitive.PVar
--- import qualified Data.Primitive.Ptr as Ptr
-import Data.Stream.Monadic (Step (..), Stream (..))
-import qualified Data.Stream.Monadic as Stream
 import Data.Strict.Tuple (Pair (..))
+import qualified Data.Strict.Tuple as Strict
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.IO as Text
 import Data.Vector (Vector)
 import qualified Data.Vector as B
+import Data.Vector.Fusion.Stream.Monadic (Step (..), Stream (..))
+import qualified Data.Vector.Fusion.Stream.Monadic as Stream
+import Data.Vector.Fusion.Util (Id (..))
 import Data.Vector.Generic ((!))
 import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Generic.Mutable as GM
 import qualified Data.Vector.Storable as S
 import qualified Data.Vector.Storable.Mutable as SM
 import qualified Data.Vector.Unboxed as U
--- import qualified Data.Vector.Unboxed.Mutable as UM
 import Data.Word
--- import Debug.Trace
--- import Foreign.Marshal.Utils
 import Foreign.Ptr
-import Foreign.Storable
 import qualified GHC.Exts as GHC (IsList (..))
 import GHC.Generics
 import GHC.Stack (HasCallStack)
-import ListT (ListT)
-import qualified ListT
 import SelfInducedGlasses.Random
 import System.IO
 import System.IO.Unsafe (unsafePerformIO)
-import System.Mem.Weak (deRefWeak)
 import qualified System.Random.MWC.Distributions as MWC
 import System.Random.Stateful
 import Text.PrettyPrint.ANSI.Leijen (Doc, Pretty (..))
 import qualified Text.PrettyPrint.ANSI.Leijen as Pretty
 import UnliftIO.Async
--- import UnliftIO.Exception (assert)
-
-import qualified UnliftIO.Concurrent as UnliftIO
 import qualified UnliftIO.Foreign as UnliftIO
-import qualified UnliftIO.IORef as UnliftIO
 
 -- | Real number
 type ℝ = Float
+
+-- | Complex number
+type ℂ = Complex Float
 
 -- | Dense matrix in row-major order
 --
@@ -149,9 +142,9 @@ data DenseMatrix v a = DenseMatrix
 -- | Hamiltonian with Ising-type interaction
 data Hamiltonian = IsingLike
   { -- | Matrix of couplings \(J_{ij}\). It is assumed to be symmetric.
-    hInteraction :: !(DenseMatrix S.Vector ℝ),
+    hInteraction :: {-# UNPACK #-} !(DenseMatrix S.Vector ℝ),
     -- | External magnetic field \(B_i\).
-    hMagneticField :: !(S.Vector ℝ)
+    hMagneticField :: {-# UNPACK #-} !(S.Vector ℝ)
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (NFData)
@@ -191,7 +184,7 @@ data MetropolisState = MetropolisState
   { -- | Current spin configuration
     configuration :: {-# UNPACK #-} !MutableConfiguration,
     -- | Current energy
-    energy :: {-# UNPACK #-} !(IORef Double),
+    energy :: {-# UNPACK #-} !(PVar Double RealWorld),
     -- | Potential energy changes upon spin flips
     deltaEnergies :: {-# UNPACK #-} !(S.MVector RealWorld ℝ)
   }
@@ -206,33 +199,16 @@ data SweepStats = SweepStats {ssTime :: {-# UNPACK #-} !Int, ssAcceptProb :: {-#
   deriving anyclass (NFData)
 
 -- | Probability distribution \(\exp^{-\beta H}\)
-data ProbDist = ProbDist {pdBeta :: !ℝ, pdHamiltonian :: !Hamiltonian}
+data ProbDist = ProbDist {pdBeta :: {-# UNPACK #-} !ℝ, pdHamiltonian :: !Hamiltonian}
   deriving stock (Show, Generic)
   deriving anyclass (NFData)
 
 data ReplicaExchangeSchedule = ReplicaExchangeSchedule
-  { resIntervals :: !(B.Vector [(Int, Int)]),
-    resSwaps :: !(B.Vector (Int, ℝ))
+  { resIntervals :: {-# UNPACK #-} !(Vector [Pair Int Int]),
+    resSwaps :: {-# UNPACK #-} !(Vector (Pair Int ℝ))
   }
   deriving stock (Show, Generic)
   deriving anyclass (NFData)
-
-data SweepTask
-  = SweepTask
-      {-# UNPACK #-} !Int
-      -- ^ replica index
-      {-# UNPACK #-} !Int
-      -- ^ start time
-      {-# UNPACK #-} !Int
-      -- ^ stop time
-  | SwapTask
-      {-# UNPACK #-} !(Pair Int Int)
-      -- ^ replica indices
-      {-# UNPACK #-} !Int
-      -- ^ time point
-      {-# UNPACK #-} !ℝ
-      -- ^ uniform random number
-  deriving stock (Show, Generic, Eq)
 
 data ReplicaColor = ReplicaBlue | ReplicaRed
   deriving stock (Eq, Show, Generic)
@@ -386,7 +362,7 @@ energyFold ::
 energyFold numReplicas =
   Foldl.premapM (pure . unObservableState) $
     stackFolds numReplicas $
-      secondMomentFold (\r -> liftIO $ readIORef r.state.energy)
+      secondMomentFold (\r -> liftIO $ readPVar r.state.energy)
 
 magnetizationFold ::
   MonadUnliftIO m =>
@@ -509,7 +485,7 @@ structureFactorFold = Foldl.FoldM step begin extract
 
 measureOne :: MonadUnliftIO m => ReplicaExchangeState g -> m SingleMeasurement
 measureOne r = do
-  e <- UnliftIO.readIORef r.state.energy
+  e <- liftIO $ readPVar r.state.energy
   m <- totalMagnetization <$> unsafeFreezeConfiguration r.state.configuration
   let c = r.hist
       f = fromIntegral c.numBlue / fromIntegral (c.numBlue + c.numRed)
@@ -706,10 +682,9 @@ maybeExchangeReplicas
   !r1@(ReplicaExchangeState (ProbDist β1 _) s1 c1 _ _ _)
   !r2@(ReplicaExchangeState (ProbDist β2 _) s2 c2 _ _ _)
   !u = do
-    !δe <- liftIO $ do
-      !e1 <- readIORef s1.energy
-      !e2 <- readIORef s2.energy
-      pure $ realToFrac (e2 - e1)
+    !δe <-
+      liftIO . fmap realToFrac $
+        (-) <$> readPVar s2.energy <*> readPVar s1.energy
     let !δβ = β2 - β1
     if u <= exp (δβ * δe)
       then
@@ -746,7 +721,7 @@ runReplicaExchangeSchedule sweepSize schedule₀ states₀ = do
     --   m (Async (ReplicaExchangeState g), [(Int, Int)])
     spawn !replica@(ReplicaExchangeState probDist _ _ _ _ g) !intervals =
       case intervals of
-        ((start, end) : others) -> do
+        ((start :!: end) : others) -> do
           future <- async $ do
             stats' <- doManySweeps probDist (end - start) sweepSize replica.state g
             -- liftIO . putStrLn $ "Result of (" <> show probDist.pdBeta <> "): " <> show stats'
@@ -761,7 +736,7 @@ runReplicaExchangeSchedule sweepSize schedule₀ states₀ = do
     --   B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]) ->
     --   (Int, ℝ) ->
     --   m (B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]))
-    step accumulators (i, u)
+    step accumulators (i :!: u)
       | G.length accumulators > 1 = do
           let n = G.length accumulators
               (future1, intervals1) = accumulators ! i
@@ -777,15 +752,16 @@ runReplicaExchangeSchedule sweepSize schedule₀ states₀ = do
           state1 <- wait future1
           acc1' <- spawn state1 intervals1
           pure $ accumulators G.// [(i, acc1')]
-    extract ::
-      B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]) ->
-      m (B.Vector (ReplicaExchangeState g))
+    -- extract ::
+    --   B.Vector (Async (ReplicaExchangeState g), [(Int, Int)]) ->
+    --   m (B.Vector (ReplicaExchangeState g))
     extract accumulators =
       G.forM accumulators $ \(future, intervals) -> do
         unless (null intervals) $ error "not all intervals have been processed"
         wait future
 {-# SCC runReplicaExchangeSchedule #-}
 
+{-
 initSweepTaskInputOutputs ::
   MonadUnliftIO m =>
   Vector (ReplicaExchangeState g) ->
@@ -801,7 +777,7 @@ scheduleToSweepTasks schedule =
       G.fromList $
         fmap (\(start, stop) -> SweepTask i start stop) intervals
     sweepTasks = G.concat . G.toList $ G.imap mkTasksOneReplica schedule.resIntervals
-    swapTasks = G.imap (\t (i, u) -> SwapTask (i :!: i + 1) (t + 1) u) schedule.resSwaps
+    swapTasks = G.imap (\t (i :!: u) -> SwapTask (i :!: i + 1) (t + 1) u) schedule.resSwaps
 
 instance Ord SweepTask where
   compare (SweepTask _ start1 stop1) (SweepTask _ start2 stop2) =
@@ -967,6 +943,7 @@ runReplicaExchangeSchedule' sweepSize schedule states = do
   --   Pretty.putDoc $ pretty schedule
   --   putStrLn ""
   runSweepTasks sweepSize states (scheduleToSweepTasks schedule)
+-}
 
 -- data SweepTask
 --   = SweepTask
@@ -993,21 +970,25 @@ runReplicaExchangeSchedule' sweepSize schedule states = do
 --         2   ━━╸╺━━🡽🡾━━🡽🡾━━    [(0, 2), (2, 3), (3, 4)]
 --              [0,  1,  1,  0]
 
-prettyInterval :: G.Vector v (Int, ℝ) => Int -> (Int, Int) -> v (Int, ℝ) -> Doc
-prettyInterval rowIdx (start, end) swaps =
+prettyInterval :: G.Vector v (Pair Int ℝ) => Int -> Pair Int Int -> v (Pair Int ℝ) -> Doc
+prettyInterval rowIdx (start :!: end) swaps =
   Pretty.text left <> Pretty.hcat middle <> Pretty.text right
   where
     middle = Pretty.punctuate (Pretty.text "╸╺") (replicate (end - start) (Pretty.text "━━"))
     left
       | start <= 0 = "╺"
-      | fst (swaps ! (start - 1)) == rowIdx = "🡽"
-      | fst (swaps ! (start - 1)) == rowIdx - 1 = "🡾"
+      | i == rowIdx = "🡽"
+      | i + 1 == rowIdx = "🡾"
       | otherwise = "╺"
+      where
+        ~(i :!: _) = swaps ! (start - 1)
     right
       | end <= 0 = "╸"
-      | fst (swaps ! (end - 1)) == rowIdx = "🡾"
-      | fst (swaps ! (end - 1)) == rowIdx - 1 = "🡽"
+      | i == rowIdx = "🡾"
+      | i + 1 == rowIdx = "🡽"
       | otherwise = "╸"
+      where
+        ~(i :!: _) = swaps ! (end - 1)
 
 prettyRow :: ReplicaExchangeSchedule -> Int -> Doc
 prettyRow schedule rowIdx =
@@ -1024,27 +1005,31 @@ prettySchedule schedule =
 instance Pretty ReplicaExchangeSchedule where
   pretty = prettySchedule
 
-mkIntervals :: G.Vector v (Int, ℝ) => v (Int, ℝ) -> Int -> [(Int, Int)]
-mkIntervals swaps replicaIdx = go [(0, G.length swaps)] (G.length swaps - 1)
+{-
+mkIntervals :: G.Vector v (Pair Int ℝ) => v (Pair Int ℝ) -> Int -> [Pair Int Int]
+mkIntervals swaps replicaIdx = go [0 :!: G.length swaps] (G.length swaps - 1)
   where
-    go acc@((!start, !end) : rest) !i
+    go acc@((start :!: end) : rest) !i
       | i <= 0 = acc
-      | fst (swaps ! (i - 1)) == replicaIdx
-          || fst (swaps ! (i - 1)) == replicaIdx - 1 =
-          go ((start, i) : (i, end) : rest) (i - 1)
+      | Strict.fst (swaps ! (i - 1)) == replicaIdx
+          || Strict.fst (swaps ! (i - 1)) == replicaIdx - 1 =
+          go ((start :!: i) : (i :!: end) : rest) (i - 1)
       | otherwise = go acc (i - 1)
     go _ _ = error "this should never happen by construction"
+-}
 
-mkIntervals' :: G.Vector v (Pair Int ℝ) => v (Pair Int ℝ) -> Int -> [Pair Int Int]
-mkIntervals' swaps replicaIdx = go 0 (G.toList relevantSwaps)
+mkIntervals :: G.Vector v (Pair Int ℝ) => v (Pair Int ℝ) -> Int -> [Pair Int Int]
+mkIntervals swaps replicaIdx = go 0 relevantSwaps
   where
-    go !s ((t, i :!: _) : others) = let !t' = t + 1 in (s :!: t') : go t' others
-    go !s [] = [(s :!: G.length swaps + 1)]
+    n = G.length swaps
+    go !s (t : others) = (s :!: t) : go t others
+    go !s [] = if s < n then [(s :!: n)] else []
     relevantSwaps =
-      G.filter (\(_, i :!: _) -> i == replicaIdx || i + 1 == replicaIdx) $
-        G.indexed swaps
+      fmap Strict.fst $
+        filter (\(_ :!: (i :!: _)) -> i == replicaIdx || i + 1 == replicaIdx) $
+          zipWith (:!:) [1 ..] (G.toList swaps)
 
-mkSchedule :: G.Vector v (Int, ℝ) => Int -> v (Int, ℝ) -> ReplicaExchangeSchedule
+mkSchedule :: G.Vector v (Pair Int ℝ) => Int -> v (Pair Int ℝ) -> ReplicaExchangeSchedule
 mkSchedule numReplicas swaps =
   ReplicaExchangeSchedule
     (G.generate numReplicas (mkIntervals swaps))
@@ -1053,8 +1038,8 @@ mkSchedule numReplicas swaps =
 randomReplicaExchangeScheduleM :: StatefulGen g m => Int -> Int -> g -> m ReplicaExchangeSchedule
 randomReplicaExchangeScheduleM numReplicas numSwaps g = do
   swaps <-
-    U.replicateM numSwaps $
-      (,)
+    B.replicateM numSwaps $
+      (:!:)
         <$> uniformRM (0, max 0 (numReplicas - 2)) g
         <*> uniformRM (0, 1) g
   pure $ mkSchedule numReplicas swaps
@@ -1093,7 +1078,7 @@ randomMetropolisStateM hamiltonian g = do
   MetropolisState <$> thawConfiguration spins <*> mkCurrentEnergy spins <*> mkDeltaEnergies spins
   where
     n = G.length . hMagneticField $ hamiltonian
-    mkCurrentEnergy spins = liftIO $ newIORef (totalEnergy hamiltonian spins)
+    mkCurrentEnergy spins = liftIO . newPVar $ totalEnergy hamiltonian spins
     mkDeltaEnergies spins = liftIO . G.thaw $ energyChanges hamiltonian spins
 
 randomReplicaExchangeStateM ::
@@ -1249,6 +1234,66 @@ freezeReplicas replicas
         <$> liftIO (S.unsafeFreeze buf)
 -}
 
+rkkyInteraction :: Double -> Pair Int Int -> Double
+rkkyInteraction λ (x :!: y) = 1 / r2 * sin (2 * pi / λ * r)
+  where
+    r2 = fromIntegral $ x * x + y * y
+    r = sqrt r2
+{-# INLINE rkkyInteraction #-}
+
+resummedSquare :: Double -> Pair Int Int -> Pair Int Int -> Int -> Double
+resummedSquare λ (width :!: height) (x₀ :!: y₀) a =
+  side top + side right + side bottom + side left
+  where
+    top k = (-a + k) :!: a
+    bottom k = (a - k) :!: (-a)
+    right k = a :!: (a - k)
+    left k = (-a) :!: (-a + k)
+
+    shiftedPoint (x :!: y) = x₀ + width * x :!: y₀ + height * y
+    side f =
+      unId $
+        Stream.foldl' (+) 0 $
+          Stream.map (rkkyInteraction λ . shiftedPoint) $
+            Stream.generate (2 * a) f
+{-# SCC resummedSquare #-}
+
+resummedRkkyInteraction :: Monad m => Double -> Pair Int Int -> Pair Int Int -> Stream m Double
+resummedRkkyInteraction λ shape p₀ =
+  Stream.scanl' (+) (rkkyInteraction λ p₀) resumAllSquares
+  where
+    square a = resummedSquare λ shape p₀ a
+    resumAllSquares =
+      let f !a = let !x = square a in Just (x, a + 1)
+       in Stream.unfoldr f 1
+
+kolmusRkkyModel :: Text -> IO Hamiltonian
+kolmusRkkyModel filename = do
+  let parse [i, j, c] = (read (Text.unpack i), read (Text.unpack j), read (Text.unpack c))
+      parse x = error $ "expected i,j,coupling; got " <> show x
+  tuples <-
+    fmap parse
+      <$> fmap (Text.split (== ','))
+      <$> Text.lines
+      <$> Text.readFile (Text.unpack filename)
+  let sideLength = (+ 1) . maximum $ fmap (\(i, j, _) -> max i j) tuples
+      n = sideLength * sideLength
+      magneticField = G.replicate n 0
+  buf <- SM.new (n * n)
+  loopM 0 (< sideLength) (+ 1) $ \ !x₀ ->
+    loopM 0 (< sideLength) (+ 1) $ \ !y₀ -> do
+      let !i = y₀ * sideLength + x₀
+          write δx δy c =
+            let x = (x₀ + δx) `mod` sideLength
+                y = (y₀ + δy) `mod` sideLength
+                j = y * sideLength + x
+             in SM.write buf (i * n + j) c
+      forM_ tuples $ \(δx, δy, c) -> do
+        write δx δy c
+        write δy δx c
+  interactionMatrix <- DenseMatrix n n <$> S.unsafeFreeze buf
+  pure $ IsingLike interactionMatrix magneticField
+
 ferromagneticIsingModelSquare2D ::
   -- | Length of the lattice
   Int ->
@@ -1347,10 +1392,10 @@ randomIsingModel3D n seed = IsingLike interactionMatrix magneticField
 
       DenseMatrix nSpins nSpins <$> G.unsafeFreeze buf
 
-allConfigurations :: MonadUnliftIO m => Int -> ListT m Configuration
+allConfigurations :: MonadUnliftIO m => Int -> Stream m Configuration
 allConfigurations n
   | n >= 32 = error "too many spins"
-  | otherwise = ListT.unfold step (0 :: Word64)
+  | otherwise = Stream.unfoldr step (0 :: Word64)
   where
     toConfiguration !i = Configuration n (G.singleton i)
     step !i
@@ -1474,7 +1519,7 @@ doManySweeps ::
   MetropolisState ->
   Xoshiro256PlusPlus (PrimState m) ->
   m SweepStats
-doManySweeps (ProbDist β hamiltonian) numberSweeps sweepSize s gen@(Xoshiro256PlusPlus g) = do
+doManySweeps (ProbDist β hamiltonian) numberSweeps sweepSize s (Xoshiro256PlusPlus g) = do
   -- k <- unsafeFreezeConfiguration s.configuration
   -- g' <- freezeGen gen
   -- liftIO . putStrLn $ "doManySweeps " <> show (β, numberSweeps, sweepSize, k, g')
@@ -1484,7 +1529,7 @@ doManySweeps (ProbDist β hamiltonian) numberSweeps sweepSize s gen@(Xoshiro256P
   withDenseMatrix hamiltonian.hInteraction $ \couplingsPtr ->
     withMutableConfiguration s.configuration $ \statePtr ->
       withMutableVector s.deltaEnergies $ \deltaEnergiesPtr -> do
-        e₀ <- UnliftIO.readIORef s.energy
+        e₀ <- liftIO $ readPVar s.energy
         UnliftIO.with e₀ $ \energyPtr -> do
           !acceptance <-
             liftIO $ do
@@ -1501,8 +1546,7 @@ doManySweeps (ProbDist β hamiltonian) numberSweeps sweepSize s gen@(Xoshiro256P
                   energyPtr
               touch g
               pure r
-          !e <- liftIO $ peek energyPtr
-          UnliftIO.writeIORef s.energy e
+          liftIO $ peek energyPtr >>= writePVar s.energy
           pure $ SweepStats totalSteps acceptance
 
 -- | Clone a spin configuration into a mutable one
@@ -1535,6 +1579,55 @@ unsafeFreezeConfiguration (MutableConfiguration n v) = withRunInIO $ \_ ->
   Configuration n <$> G.unsafeFreeze v
 {-# INLINE unsafeFreezeConfiguration #-}
 
+autocorrelation :: (G.Vector v a, G.Vector v ℝ, G.Vector v ℂ, Real a) => v a -> v ℝ
+autocorrelation v = G.map (/ G.head autocorr) autocorr
+  where
+    size = G.length v
+    n = (1 `shiftL`) . ceiling . logBase 2 . (fromIntegral :: Int -> Double) $ G.length v
+    preprocessed = G.map (\x -> realToFrac x :+ 0) v G.++ G.replicate (2 * n - size) 0
+    f = fft preprocessed
+    autocorr = G.map realPart . G.take size . ifft $ G.map (\x -> x * conjugate x) f
+
+autocorrTime :: (G.Vector v ℝ, G.Vector v (Int, ℝ)) => v ℝ -> ℝ
+autocorrTime f =
+  case G.find (\(i, τ) -> fromIntegral i < c * τ) $ G.indexed τs of
+    Just (_, τ) -> τ
+    Nothing -> G.last τs
+  where
+    τs = G.map (\x -> 2 * x - 1) $ G.scanl1' (+) f
+    c = 5
+
+-- r"""Estimate the normalized autocorrelation function of a 1D array."""
+-- if x.ndim != 1:
+--     raise ValueError("x has wrong shape: {}; expected a 1D array".format(x.shape))
+-- n = 1 << math.ceil(math.log2(len(x)))
+-- f = np.fft.fft(x - np.mean(x), n=2 * n)
+-- autocorr = np.fft.ifft(f * np.conj(f))[: len(x)].real
+-- autocorr /= autocorr[0]
+-- return autocorr
+
+genericFFT ::
+  G.Vector v (Complex Float) =>
+  (Int -> Ptr (Complex Float) -> Ptr (Complex Float) -> IO ()) ->
+  v (Complex Float) ->
+  v (Complex Float)
+genericFFT f v =
+  unsafePerformIO $ do
+    signal <- S.unsafeThaw (G.convert v)
+    output <- SM.unsafeNew n
+    SM.unsafeWith signal $ \signalPtr ->
+      SM.unsafeWith output $ \outputPtr ->
+        f n signalPtr outputPtr
+    G.convert <$> S.unsafeFreeze output
+  where
+    n = G.length v
+
+fft :: G.Vector v (Complex Float) => v (Complex Float) -> v (Complex Float)
+fft = genericFFT c_fft
+
+ifft :: G.Vector v (Complex Float) => v (Complex Float) -> v (Complex Float)
+ifft = genericFFT c_ifft
+
 {-
 unsafeFreezeDenseMatrix ::
   (MonadUnliftIO m, GM.MVector (G.Mutable v) a, G.Vector v a) =>
@@ -1544,6 +1637,11 @@ unsafeFreezeDenseMatrix (DenseMatrix nRows nCols v) =
   DenseMatrix nRows nCols <$> liftIO (G.unsafeFreeze v)
 {-# INLINE unsafeFreezeDenseMatrix #-}
 -}
+foreign import ccall unsafe "fft.h fft"
+  c_fft :: Int -> Ptr (Complex Float) -> Ptr (Complex Float) -> IO ()
+
+foreign import ccall unsafe "fft.h ifft"
+  c_ifft :: Int -> Ptr (Complex Float) -> Ptr (Complex Float) -> IO ()
 
 foreign import ccall unsafe "metropolis.h energy_change_upon_flip"
   c_energyChangeUponFlip :: Int -> Ptr Float -> Ptr Float -> Ptr Word64 -> Int -> Float

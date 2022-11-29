@@ -11,8 +11,9 @@ module Main (main) where
 -- import Control.Monad.ST (RealWorld)
 -- import Data.List (intersperse)
 -- import Data.Stream.Monadic (Step (..), Stream (..))
-import qualified Data.Stream.Monadic as Stream
+
 import Data.Text (pack)
+import qualified Data.Vector.Fusion.Stream.Monadic as Stream
 -- import Data.Vector (Vector)
 -- import Data.Vector.Generic ((!))
 import qualified Data.Vector.Generic as G
