@@ -32,6 +32,7 @@ module SelfInducedGlasses.Sampling
     ReplicaExchangeSchedule (..),
     ReplicaExchangeState (..),
     ObservableState (..),
+    SamplingResult (..),
     ColorStats (..),
     indexConfiguration,
     totalEnergy,
@@ -72,6 +73,7 @@ module SelfInducedGlasses.Sampling
     randomConfigurationM,
     updateTemperatures,
     betasGeometric,
+    tuneTemperatures,
   )
 where
 
@@ -81,6 +83,8 @@ import qualified Control.Foldl as Foldl
 import Control.Monad (forM_, unless)
 import Control.Monad.IO.Unlift
 import Control.Monad.Primitive
+import Data.Binary (Binary (..))
+import qualified Data.Binary as Binary
 import Data.Bits
 import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as Builder
@@ -95,6 +99,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import Data.Vector (Vector)
 import qualified Data.Vector as B
+import Data.Vector.Binary ()
 import Data.Vector.Fusion.Stream.Monadic (Step (..), Stream (..))
 import qualified Data.Vector.Fusion.Stream.Monadic as Stream
 import Data.Vector.Fusion.Util (Id (..))
@@ -116,6 +121,7 @@ import qualified System.Random.MWC.Distributions as MWC
 import System.Random.Stateful
 import Text.PrettyPrint.ANSI.Leijen (Doc, Pretty (..))
 import qualified Text.PrettyPrint.ANSI.Leijen as Pretty
+import Text.Printf (printf)
 import UnliftIO.Async
 import qualified UnliftIO.Foreign as UnliftIO
 
@@ -137,7 +143,7 @@ data DenseMatrix v a = DenseMatrix
     elements :: !(v a)
   }
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (NFData)
+  deriving anyclass (NFData, Binary)
 
 -- | Hamiltonian with Ising-type interaction
 data Hamiltonian = IsingLike
@@ -147,7 +153,7 @@ data Hamiltonian = IsingLike
     hMagneticField :: {-# UNPACK #-} !(S.Vector ℝ)
   }
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (NFData)
+  deriving anyclass (NFData, Binary)
 
 -- | Bitstring representing a spin configuration.
 data Configuration = Configuration
@@ -157,7 +163,7 @@ data Configuration = Configuration
     bits :: {-# UNPACK #-} !(S.Vector Word64)
   }
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (NFData)
+  deriving anyclass (NFData, Binary)
 
 -- | A batch of spin configurations.
 data ConfigurationBatch
@@ -167,7 +173,7 @@ data ConfigurationBatch
       {-# UNPACK #-} !(DenseMatrix S.Vector Word64)
       -- ^ Bitstrings -- each row of the matrix is a spin configuration
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (NFData)
+  deriving anyclass (NFData, Binary)
 
 -- | Mutable counterpart of 'Configuration'.
 data MutableConfiguration = MutableConfiguration
@@ -196,27 +202,27 @@ data MetropolisState = MetropolisState
 -- 'SweepStats' obtained from multiple sweeps can be combined using the 'Monoid' instance.
 data SweepStats = SweepStats {ssTime :: {-# UNPACK #-} !Int, ssAcceptProb :: {-# UNPACK #-} !Double}
   deriving stock (Show, Generic)
-  deriving anyclass (NFData)
+  deriving anyclass (NFData, Binary)
 
 -- | Probability distribution \(\exp^{-\beta H}\)
 data ProbDist = ProbDist {pdBeta :: {-# UNPACK #-} !ℝ, pdHamiltonian :: !Hamiltonian}
   deriving stock (Show, Generic)
-  deriving anyclass (NFData)
+  deriving anyclass (NFData, Binary)
 
 data ReplicaExchangeSchedule = ReplicaExchangeSchedule
   { resIntervals :: {-# UNPACK #-} !(Vector [Pair Int Int]),
     resSwaps :: {-# UNPACK #-} !(Vector (Pair Int ℝ))
   }
   deriving stock (Show, Generic)
-  deriving anyclass (NFData)
+  deriving anyclass (NFData, Binary)
 
 data ReplicaColor = ReplicaBlue | ReplicaRed
   deriving stock (Eq, Show, Generic)
-  deriving anyclass (NFData)
+  deriving anyclass (NFData, Binary)
 
 data ColorStats = ColorStats {numBlue :: {-# UNPACK #-} !Int, numRed :: {-# UNPACK #-} !Int}
   deriving stock (Show, Generic)
-  deriving anyclass (NFData)
+  deriving anyclass (NFData, Binary)
 
 data ReplicaExchangeState g = ReplicaExchangeState
   { prob :: !ProbDist,
@@ -233,13 +239,21 @@ newtype ObservableState g = ObservableState {unObservableState :: (Vector (Repli
   deriving stock (Generic)
   deriving anyclass (NFData)
 
+data SamplingResult = SamplingResult
+  { temperature :: !ℝ,
+    energies :: !(U.Vector Double),
+    samples :: !(Vector Configuration)
+  }
+  deriving stock (Show, Generic)
+  deriving anyclass (NFData, Binary)
+
 data SingleMeasurement = SingleMeasurement
   { energy :: !Double,
     magnetization :: !Double,
     flow :: !Double
   }
   deriving stock (Show, Generic)
-  deriving anyclass (NFData)
+  deriving anyclass (NFData, Binary)
 
 data PairMeasurement = PairMeasurement
   { energy :: !(Pair Double Double),
@@ -248,7 +262,7 @@ data PairMeasurement = PairMeasurement
     overlap :: !Double
   }
   deriving stock (Show, Generic)
-  deriving anyclass (NFData)
+  deriving anyclass (NFData, Binary)
 
 updateVarianceAcc :: Fractional a => (Int, a, a) -> a -> (Int, a, a)
 updateVarianceAcc (!n, !μ, !m2) !x = (n', μ', m2')
@@ -261,7 +275,7 @@ updateVarianceAcc (!n, !μ, !m2) !x = (n', μ', m2')
 
 data MeanVariance a = MeanVariance {mean :: !a, variance :: !a}
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (NFData)
+  deriving anyclass (NFData, Binary)
 
 extractMoments :: Fractional a => (Int, a, a) -> MeanVariance a
 extractMoments (!n, !μ, !m2)
@@ -308,6 +322,70 @@ updateTemperatures ts colorStats = G.generate (G.length ts) getTemperature
                in t + δt * (target - s) / (factors ! i)
           where
             s' = s + (factors ! i)
+
+tuneTemperatures ::
+  forall m g.
+  (MonadUnliftIO m, PrimMonad m, g ~ Xoshiro256PlusPlus (PrimState m)) =>
+  -- | Sweep size
+  Int ->
+  -- | Number of sweeps between measurements
+  Int ->
+  -- | The Hamiltonian
+  Hamiltonian ->
+  -- | Inverse temperatures βs
+  Vector ℝ ->
+  -- | Random number generator
+  g ->
+  Stream m (Vector ℝ)
+tuneTemperatures sweepSize numberSweeps hamiltonian βs₀ g = do
+  let go :: Pair Int (Vector ℝ) -> m (Maybe (Vector ℝ, Pair Int (Vector ℝ)))
+      go (k :!: βs) = do
+        (ObservableState replicas) <-
+          Stream.last . Stream.take 2 $
+            monteCarloSampling
+              {- sweepSize -} sweepSize
+              {- numberSweeps -} ((2 ^ k) * numberSweeps)
+              hamiltonian
+              βs
+              g
+        let !βs' =
+              fmap recip $
+                updateTemperatures
+                  (fmap recip βs)
+                  (fmap (\r -> r.hist) replicas)
+            getFlow !r = fromIntegral r.hist.numBlue / fromIntegral (r.hist.numRed + r.hist.numBlue)
+        liftIO $ do
+          writeVectorToCsv (Text.pack $ printf "temperatures_%02d.csv" (k + 1)) (fmap recip βs')
+          writeVectorToCsv (Text.pack $ printf "replica_flow_%02d.csv" k) (fmap getFlow replicas)
+        pure $ Just (βs', (k + 1) :!: βs')
+  Stream.unfoldrM go (0 :!: βs₀)
+
+-- let k = 2
+--     go (i :: Int) ts
+--       | i >= k = do
+--           writeVectorToCsv (pack $ printf "temperatures_%02d.csv" i) ts
+--       | otherwise = do
+--           writeVectorToCsv (pack $ printf "temperatures_%02d.csv" i) ts
+--           (ObservableState replicas) <-
+--             Stream.last . Stream.take 10 $
+--               monteCarloSampling
+--                 {- sweepSize -} 400
+--                 {- numberSweeps -} ((2 ^ i) * 10000)
+--                 h
+--                 (G.map (\t -> 1 / t) ts)
+--                 g
+--           let stats = G.map (\r -> r.hist) replicas
+--               ts' = updateTemperatures ts stats
+--               accept = G.map (\r -> realToFrac r.stats.ssAcceptProb) replicas
+--               getFlow r = fromIntegral r.hist.numBlue / fromIntegral (r.hist.numRed + r.hist.numBlue)
+--               flow = G.map getFlow replicas
+--           print stats
+--           print ts'
+--           writeVectorToCsv (pack $ printf "acceptance_%02d.csv" (i + 1)) accept
+--           writeVectorToCsv (pack $ printf "flow_%02d.csv" (i + 1)) flow
+--           go (i + 1) ts'
+-- go 0 (G.map (\β -> 1 / β) βs)
+-- pure ()
 
 betasGeometric ::
   -- | Number temperatures
@@ -1142,8 +1220,7 @@ energyChanges hamiltonian s@(Configuration n _) =
             pure $ c_energyChangeUponFlip n couplingsPtr fieldPtr statePtr i
 
 monteCarloSampling' ::
-  forall m a.
-  (MonadUnliftIO m, PrimMonad m) =>
+  (MonadUnliftIO m, PrimMonad m, g ~ Xoshiro256PlusPlus (PrimState m)) =>
   -- | Sweep size
   Int ->
   -- | Number of sweeps between measurements
@@ -1156,17 +1233,28 @@ monteCarloSampling' ::
   Hamiltonian ->
   -- | Inverse temperatures βs
   B.Vector ℝ ->
-  -- | What to measure
-  FoldM m (ObservableState (Xoshiro256PlusPlus (PrimState m))) a ->
   -- | Random number generator
-  Xoshiro256PlusPlusState ->
-  m a
-monteCarloSampling' sweepSize numberSweeps numberSkip numberMeasure hamiltonian βs fold gₘₐᵢₙ = do
-  -- let gs = splitForParallel (G.length βs) gₘₐᵢₙ
-  gₘₐᵢₙ' <- thawGen gₘₐᵢₙ
-  -- (gs' :: B.Vector (Xoshiro256PlusPlus (PrimState m))) <- G.mapM thawGen gs
-  streamFoldM fold . Stream.take numberMeasure . Stream.drop numberSkip $
-    monteCarloSampling sweepSize numberSweeps hamiltonian βs gₘₐᵢₙ'
+  g ->
+  m (Vector SamplingResult)
+monteCarloSampling' sweepSize numberSweeps numberSkip numberMeasure hamiltonian βs gₘₐᵢₙ = do
+  let n = G.length βs
+      chain =
+        Stream.indexed . Stream.take numberMeasure . Stream.drop numberSkip $
+          monteCarloSampling sweepSize numberSweeps hamiltonian βs gₘₐᵢₙ
+  es <- B.replicateM n $ GM.new numberMeasure
+  xs <- B.replicateM n $ GM.new numberMeasure
+  let store (!i, ObservableState !rs) =
+        loopM 0 (< n) (+ 1) $ \ !replicaIdx -> do
+          let r = rs ! replicaIdx
+              e = es ! replicaIdx
+              x = xs ! replicaIdx
+          GM.write e i =<< liftIO (readPVar r.state.energy)
+          GM.write x i =<< freezeConfiguration r.state.configuration
+  Stream.mapM_ store chain
+  G.generateM n $ \replicaIdx ->
+    SamplingResult (1 / (βs ! replicaIdx))
+      <$> G.unsafeFreeze (es ! replicaIdx)
+      <*> G.unsafeFreeze (xs ! replicaIdx)
 
 streamFoldM :: Monad m => FoldM m a b -> Stream m a -> m b
 streamFoldM (FoldM step begin extract) stream = do
@@ -1555,13 +1643,11 @@ thawConfiguration (Configuration n v) = withRunInIO $ \_ ->
   MutableConfiguration n <$> G.thaw v
 {-# INLINE thawConfiguration #-}
 
-{-
 -- | Freeze a spin configuration into an immutable one
 freezeConfiguration :: MonadUnliftIO m => MutableConfiguration -> m Configuration
 freezeConfiguration (MutableConfiguration n v) = withRunInIO $ \_ ->
   Configuration n <$> G.freeze v
 {-# INLINE freezeConfiguration #-}
--}
 
 {-
 -- | Unsafe version of 'thawConfiguration' which avoids copying. Using this function is only legal

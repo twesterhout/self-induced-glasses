@@ -82,7 +82,8 @@ library
                      , text
                      , async
                      , deepseq
-                     -- , scheduler
+                     , binary
+                     , vector-binary-instances >= 0.2
                      , containers
                      , bytestring
                      , random >= 1.2
@@ -104,19 +105,14 @@ library
 
 executable ising2d
   import:              common-options
-  buildable:           False
+  buildable:           True
   hs-source-dirs:      app/ising2d
   main-is:             Main.hs
   build-depends:       self-induced-glasses
-                     , primitive
-                     , vector
-                     , vector-stream
-                     , random
-                     , mtl
-                     , text
-                     , list-t
-                     , foldl
                      , optparse-applicative
+                     , random
+                     , vector
+                     , binary
   ghc-options:         -threaded
                        -rtsopts
                        -with-rtsopts=-N
@@ -192,17 +188,17 @@ executable sherrington-kirkpatrick
 --                        -rtsopts
 --                        -with-rtsopts=-N
 -- 
-test-suite self-induced-glasses-test
-  import:              common-options
-  type:                exitcode-stdio-1.0
-  hs-source-dirs:      test
-  main-is:             Spec.hs
-  build-depends:       self-induced-glasses
-                     , hspec
-                     , vector
-                     , list-t
-                     , foldl
-                     , random
-  ghc-options:         -threaded
-                       -rtsopts
-                       -with-rtsopts=-N
+-- test-suite self-induced-glasses-test
+--   import:              common-options
+--   type:                exitcode-stdio-1.0
+--   hs-source-dirs:      test
+--   main-is:             Spec.hs
+--   build-depends:       self-induced-glasses
+--                      , hspec
+--                      , vector
+--                      , list-t
+--                      , foldl
+--                      , random
+--   ghc-options:         -threaded
+--                        -rtsopts
+--                        -with-rtsopts=-N
