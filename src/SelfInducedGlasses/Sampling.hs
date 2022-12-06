@@ -1287,7 +1287,7 @@ kolmusRkkyModel filename = do
             let x = (x₀ + δx) `mod` sideLength
                 y = (y₀ + δy) `mod` sideLength
                 j = y * sideLength + x
-             in SM.write buf (i * n + j) c
+             in SM.write buf (i * n + j) (-0.5 * c)
       forM_ tuples $ \(δx, δy, c) -> do
         write δx δy c
         write δy δx c
